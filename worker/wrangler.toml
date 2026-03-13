@@ -1,0 +1,7 @@
+name = "tuchuang-api"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+
+[[r2_buckets]]
+binding = "IMAGES"
+bucket_name = "tuchuang-images"

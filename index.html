@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>图床 · Tuchuang</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- 认证蒙层 -->
+  <div id="auth-overlay" class="overlay">
+    <div class="auth-box">
+      <div class="auth-logo">🖼️</div>
+      <h2>图床</h2>
+      <p>请输入访问密码</p>
+      <input id="auth-input" type="password" placeholder="输入密码" maxlength="20" />
+      <button id="auth-btn">进入</button>
+      <p id="auth-error" class="error hidden">密码错误，请重试</p>
+    </div>
+  </div>
+
+  <!-- 主界面 -->
+  <div id="app" class="hidden">
+    <header>
+      <div class="logo">🖼️ 图床</div>
+      <button id="logout-btn" class="logout">退出</button>
+    </header>
+
+    <main>
+      <!-- 上传区域 -->
+      <div id="drop-zone" class="drop-zone">
+        <div class="drop-inner">
+          <div class="drop-icon">📁</div>
+          <p class="drop-text">拖拽图片到这里</p>
+          <p class="drop-sub">或者点击选择 / 粘贴 Ctrl+V</p>
+          <input id="file-input" type="file" accept="image/*" multiple class="hidden" />
+          <button id="pick-btn" class="btn-primary">选择图片</button>
+        </div>
+      </div>
+
+      <!-- 上传进度 -->
+      <div id="progress-area" class="hidden">
+        <div class="progress-bar-wrap">
+          <div id="progress-bar" class="progress-bar"></div>
+        </div>
+        <p id="progress-text">上传中...</p>
+      </div>
+
+      <!-- 结果列表 -->
+      <div id="results" class="results"></div>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
