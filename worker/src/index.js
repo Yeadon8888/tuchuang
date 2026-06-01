@@ -1,8 +1,8 @@
-const AUTH_CODE = "1214";
+const FALLBACK_AUTH_CODE = "1214";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, HEAD, POST, OPTIONS",
   "Access-Control-Allow-Headers": "X-Auth-Code, Content-Type",
 };
 
@@ -14,10 +14,14 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
+    if (request.method === "GET" && url.pathname === "/healthz") {
+      return json({ ok: true, service: "tuchuang-api" });
+    }
+
     // POST /upload — 上传图片
     if (request.method === "POST" && url.pathname === "/upload") {
       const authCode = request.headers.get("X-Auth-Code");
-      if (authCode !== AUTH_CODE) {
+      if (!isAuthorized(authCode, env)) {
         return json({ error: "认证失败" }, 401);
       }
 
@@ -33,7 +37,7 @@ export default {
         return json({ error: "未提供文件" }, 400);
       }
 
-      const key = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`;
+      const key = `${Date.now()}-${crypto.randomUUID().slice(0, 8)}.png`;
       const arrayBuffer = await file.arrayBuffer();
 
       await env.IMAGES.put(key, arrayBuffer, {
@@ -41,11 +45,16 @@ export default {
       });
 
       const imageUrl = `${url.origin}/file/${key}`;
-      return json({ url: imageUrl, key });
+      return json({
+        url: imageUrl,
+        key,
+        markdown: `![](${imageUrl})`,
+        html: `<img src="${imageUrl}" alt="" />`,
+      });
     }
 
     // GET /file/:key — 读取图片
-    if (request.method === "GET" && url.pathname.startsWith("/file/")) {
+    if ((request.method === "GET" || request.method === "HEAD") && url.pathname.startsWith("/file/")) {
       const key = decodeURIComponent(url.pathname.slice("/file/".length));
       const object = await env.IMAGES.get(key);
 
@@ -53,11 +62,20 @@ export default {
         return new Response("Not Found", { status: 404 });
       }
 
+      const headers = {
+        "Content-Type": object.httpMetadata?.contentType || "image/png",
+        "Cache-Control": "public, max-age=31536000, immutable",
+        "Content-Length": object.size,
+        ...corsHeaders,
+      };
+
+      if (request.method === "HEAD") {
+        return new Response(null, { headers });
+      }
+
       return new Response(object.body, {
         headers: {
-          "Content-Type": "image/png",
-          "Cache-Control": "public, max-age=31536000, immutable",
-          ...corsHeaders,
+          ...headers,
         },
       });
     }
@@ -65,6 +83,11 @@ export default {
     return new Response("Not Found", { status: 404 });
   },
 };
+
+function isAuthorized(authCode, env) {
+  const expected = (env.AUTH_CODE || FALLBACK_AUTH_CODE).trim();
+  return authCode?.trim() === expected;
+}
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), {

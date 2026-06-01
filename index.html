@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>图床 · Tuchuang</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23111827'/%3E%3Ctext x='16' y='20' text-anchor='middle' font-size='10' font-family='Arial' font-weight='700' fill='white'%3EIMG%3C/text%3E%3C/svg%3E" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -11,29 +12,35 @@
   <!-- 认证蒙层 -->
   <div id="auth-overlay" class="overlay">
     <div class="auth-box">
-      <div class="auth-logo">🖼️</div>
-      <h2>图床</h2>
-      <p>请输入访问密码</p>
-      <input id="auth-input" type="password" placeholder="输入密码" maxlength="20" />
-      <button id="auth-btn">进入</button>
-      <p id="auth-error" class="error hidden">密码错误，请重试</p>
+      <div class="auth-logo" aria-hidden="true">IMG</div>
+      <h2>Yeadon 图床</h2>
+      <p>输入你收到的访问码，就可以上传图片并生成链接。</p>
+      <form id="auth-form">
+        <input class="sr-only" type="text" autocomplete="username" value="friend" aria-hidden="true" tabindex="-1" />
+        <input id="auth-input" type="password" placeholder="输入密码" maxlength="20" autocomplete="current-password" />
+        <button id="auth-btn" type="submit">进入</button>
+      </form>
+      <p id="auth-error" class="error hidden">请输入访问码</p>
     </div>
   </div>
 
   <!-- 主界面 -->
   <div id="app" class="hidden">
     <header>
-      <div class="logo">🖼️ 图床</div>
-      <button id="logout-btn" class="logout">退出</button>
+      <div>
+        <div class="logo">Yeadon 图床</div>
+        <p class="header-subtitle">拖拽、粘贴或选择图片，上传后复制链接分享。</p>
+      </div>
+      <button id="logout-btn" class="logout">更换访问码</button>
     </header>
 
     <main>
       <!-- 上传区域 -->
-      <div id="drop-zone" class="drop-zone">
+      <div id="drop-zone" class="drop-zone" role="button" tabindex="0" aria-label="选择或拖拽图片上传">
         <div class="drop-inner">
-          <div class="drop-icon">📁</div>
-          <p class="drop-text">拖拽图片到这里</p>
-          <p class="drop-sub">或者点击选择 / 粘贴 Ctrl+V</p>
+          <div class="drop-icon" aria-hidden="true">+</div>
+          <p class="drop-text">把图片放到这里</p>
+          <p class="drop-sub">支持拖拽、粘贴截图、点击选择，多张图片会依次上传。</p>
           <input id="file-input" type="file" accept="image/*" multiple class="hidden" />
           <button id="pick-btn" class="btn-primary">选择图片</button>
         </div>
@@ -45,6 +52,11 @@
           <div id="progress-bar" class="progress-bar"></div>
         </div>
         <p id="progress-text">上传中...</p>
+      </div>
+
+      <div id="batch-actions" class="batch-actions hidden">
+        <button id="copy-all-btn" class="btn-secondary">复制全部链接</button>
+        <button id="clear-results-btn" class="btn-secondary danger">清空结果</button>
       </div>
 
       <!-- 结果列表 -->
