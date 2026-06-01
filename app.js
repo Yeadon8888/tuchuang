@@ -6,6 +6,7 @@ const authForm = document.getElementById("auth-form");
 const authInput = document.getElementById("auth-input");
 const authError = document.getElementById("auth-error");
 const app = document.getElementById("app");
+const statusBanner = document.getElementById("status-banner");
 const dropZone = document.getElementById("drop-zone");
 const fileInput = document.getElementById("file-input");
 const pickBtn = document.getElementById("pick-btn");
@@ -13,11 +14,19 @@ const progressArea = document.getElementById("progress-area");
 const progressBar = document.getElementById("progress-bar");
 const progressText = document.getElementById("progress-text");
 const results = document.getElementById("results");
+const records = document.getElementById("records");
+const historyMeta = document.getElementById("history-meta");
 const batchActions = document.getElementById("batch-actions");
 const copyAllBtn = document.getElementById("copy-all-btn");
 const clearResultsBtn = document.getElementById("clear-results-btn");
+const refreshRecordsBtn = document.getElementById("refresh-records-btn");
 
 const uploadedUrls = [];
+let apiFeatures = {
+  video: false,
+  records: false,
+  cleanup: false,
+};
 
 function getToken() {
   return localStorage.getItem(AUTH_KEY);
@@ -35,6 +44,7 @@ function showApp() {
   authOverlay.classList.add("hidden");
   app.classList.remove("hidden");
   dropZone.focus({ preventScroll: true });
+  checkApiFeatures();
 }
 
 function showAuth(message = "") {
@@ -107,12 +117,12 @@ dropZone.addEventListener("drop", (event) => {
 document.addEventListener("paste", (event) => {
   if (!getToken()) return;
   const items = Array.from(event.clipboardData?.items || []);
-  const imageFiles = items
-    .filter((item) => item.type.startsWith("image/"))
+  const files = items
+    .filter((item) => item.type.startsWith("image/") || item.type.startsWith("video/"))
     .map((item) => item.getAsFile())
     .filter(Boolean);
 
-  if (imageFiles.length) handleFiles(imageFiles);
+  if (files.length) handleFiles(files);
 });
 
 copyAllBtn.addEventListener("click", async () => {
@@ -125,36 +135,38 @@ clearResultsBtn.addEventListener("click", () => {
   updateBatchActions();
 });
 
-function toPng(file) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const url = URL.createObjectURL(file);
+refreshRecordsBtn.addEventListener("click", () => loadRecords());
 
-    img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
-      canvas.getContext("2d").drawImage(img, 0, 0);
-      URL.revokeObjectURL(url);
-      canvas.toBlob(
-        (blob) => (blob ? resolve(blob) : reject(new Error("图片转换失败"))),
-        "image/png"
-      );
+async function checkApiFeatures() {
+  try {
+    const res = await fetch(`${API}/healthz`);
+    const data = await res.json();
+    const features = data.features || [];
+    apiFeatures = {
+      video: features.includes("video-upload"),
+      records: features.includes("records"),
+      cleanup: features.includes("auto-cleanup"),
     };
+    statusBanner.classList.toggle("hidden", apiFeatures.video && apiFeatures.records);
+    statusBanner.textContent = apiFeatures.video && apiFeatures.records
+      ? ""
+      : "当前 Worker 还不是视频/记录版本。图片仍可上传，视频和记录需要先部署新版 Worker。";
+  } catch {
+    apiFeatures = { video: false, records: false, cleanup: false };
+    statusBanner.classList.remove("hidden");
+    statusBanner.textContent = "当前 Worker 还不是视频/记录版本。图片仍可上传，视频和记录需要先部署新版 Worker。";
+  }
 
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("图片读取失败"));
-    };
-
-    img.src = url;
-  });
+  if (apiFeatures.records) loadRecords();
+  else {
+    historyMeta.textContent = "部署新版 Worker 后会显示最近上传记录。";
+    records.textContent = "";
+  }
 }
 
 async function uploadFile(file) {
-  const pngBlob = await toPng(file);
   const form = new FormData();
-  form.append("file", pngBlob, "image.png");
+  form.append("file", file, file.name || defaultFileName(file));
 
   const res = await fetch(`${API}/upload`, {
     method: "POST",
@@ -162,6 +174,156 @@ async function uploadFile(file) {
     body: form,
   });
 
+  return readApiResponse(res);
+}
+
+async function handleFiles(fileList) {
+  const incoming = Array.from(fileList);
+  const blockedVideos = incoming.filter((file) => file.type.startsWith("video/") && !apiFeatures.video);
+  const files = incoming.filter(isSupportedFile).filter((file) => apiFeatures.video || !file.type.startsWith("video/"));
+  blockedVideos.forEach((file) => {
+    addError(file.name || "视频文件", "新版 Worker 部署后才支持视频上传");
+  });
+
+  if (!files.length) {
+    addError("未找到可上传文件", "请选择图片或视频文件");
+    return;
+  }
+
+  progressArea.classList.remove("hidden");
+  progressBar.style.width = "0%";
+  progressText.textContent = `准备上传 ${files.length} 个文件`;
+
+  let successCount = 0;
+
+  for (let i = 0; i < files.length; i += 1) {
+    const file = files[i];
+    progressText.textContent = `上传中 ${i + 1} / ${files.length}：${file.name || "未命名文件"}`;
+    progressBar.style.width = `${Math.round((i / files.length) * 100)}%`;
+
+    try {
+      const data = await uploadFile(file);
+      addResult(file, data);
+      successCount += 1;
+    } catch (error) {
+      addError(file.name || "未命名文件", error.message);
+    }
+
+    progressBar.style.width = `${Math.round(((i + 1) / files.length) * 100)}%`;
+  }
+
+  progressText.textContent = `完成：成功 ${successCount} 个，失败 ${files.length - successCount} 个`;
+  setTimeout(() => progressArea.classList.add("hidden"), 2400);
+  fileInput.value = "";
+  if (successCount && apiFeatures.records) loadRecords();
+}
+
+async function loadRecords() {
+  if (!getToken() || !apiFeatures.records) return;
+  historyMeta.textContent = "正在读取上传记录...";
+
+  try {
+    const res = await fetch(`${API}/files?limit=60`, {
+      headers: { "X-Auth-Code": getToken() },
+    });
+    const data = await readApiResponse(res);
+    renderRecords(data.files || [], data.retentionDays || 7);
+  } catch (error) {
+    historyMeta.textContent = error.message;
+    records.textContent = "";
+  }
+}
+
+function renderRecords(files, retentionDays) {
+  records.textContent = "";
+  historyMeta.textContent = files.length
+    ? `显示最近 ${files.length} 个文件，R2 内 ${retentionDays} 天后自动清理。`
+    : `暂无记录。上传后的文件会在 R2 内保留 ${retentionDays} 天。`;
+
+  files.forEach((file) => {
+    records.appendChild(createFileCard(file, { isRecord: true }));
+  });
+}
+
+function addResult(file, data) {
+  uploadedUrls.unshift(data.url);
+  updateBatchActions();
+  results.prepend(createFileCard({
+    ...data,
+    name: file.name || data.name || "未命名文件",
+    contentType: file.type || data.contentType,
+    size: file.size || data.size,
+    previewUrl: URL.createObjectURL(file),
+  }));
+}
+
+function createFileCard(file, options = {}) {
+  const item = document.createElement("div");
+  item.className = "result-item";
+  item.innerHTML = `
+    ${renderPreview(file)}
+    <div class="result-info">
+      <div class="result-name">${escapeHtml(file.name || "未命名文件")}</div>
+      <a class="result-url" href="${escapeAttribute(file.url)}" target="_blank" rel="noreferrer">${escapeHtml(file.url)}</a>
+      <div class="result-meta">${escapeHtml(buildMeta(file))}</div>
+    </div>
+    <div class="copy-group">
+      <button class="copy-btn" data-copy="${escapeAttribute(file.url)}">URL</button>
+      <button class="copy-btn" data-copy="${escapeAttribute(file.markdown || buildMarkdown(file))}">Markdown</button>
+      <button class="copy-btn" data-copy="${escapeAttribute(file.html || buildHtml(file))}">HTML</button>
+      ${options.isRecord ? `<button class="copy-btn danger" data-delete="${escapeAttribute(file.key)}">删除</button>` : ""}
+    </div>
+  `;
+
+  item.querySelectorAll("[data-copy]").forEach((button) => {
+    const label = button.textContent;
+    button.addEventListener("click", () => copyText(button.dataset.copy, button, label));
+  });
+
+  const deleteBtn = item.querySelector("[data-delete]");
+  if (deleteBtn) {
+    deleteBtn.addEventListener("click", () => deleteRecord(file.key, item));
+  }
+
+  return item;
+}
+
+function renderPreview(file) {
+  const url = file.previewUrl || file.url;
+  if (isVideo(file)) {
+    return `<video class="result-thumb" src="${escapeAttribute(url)}" muted playsinline controls></video>`;
+  }
+  return `<img class="result-thumb" src="${escapeAttribute(url)}" alt="" />`;
+}
+
+async function deleteRecord(key, item) {
+  try {
+    const res = await fetch(`${API}/file/${encodeURIComponent(key)}`, {
+      method: "DELETE",
+      headers: { "X-Auth-Code": getToken() },
+    });
+    await readApiResponse(res);
+    item.remove();
+    loadRecords();
+  } catch (error) {
+    addError("删除失败", error.message);
+  }
+}
+
+function addError(name, message) {
+  const item = document.createElement("div");
+  item.className = "result-item error-item";
+  item.innerHTML = `
+    <div class="error-mark">!</div>
+    <div class="result-info">
+      <div class="result-name">${escapeHtml(name)}</div>
+      <div class="result-error">${escapeHtml(message)}</div>
+    </div>
+  `;
+  results.prepend(item);
+}
+
+async function readApiResponse(res) {
   if (res.status === 401) {
     clearToken();
     showAuth("访问码不对，请重新输入");
@@ -176,86 +338,10 @@ async function uploadFile(file) {
   }
 
   if (!res.ok) {
-    throw new Error(data.error || "上传失败，请稍后重试");
+    throw new Error(data.error || "请求失败，请稍后重试");
   }
 
   return data;
-}
-
-async function handleFiles(fileList) {
-  const files = Array.from(fileList).filter((file) => file.type.startsWith("image/"));
-  if (!files.length) {
-    addError("未找到图片", "请选择图片文件");
-    return;
-  }
-
-  progressArea.classList.remove("hidden");
-  progressBar.style.width = "0%";
-  progressText.textContent = `准备上传 ${files.length} 张`;
-
-  let successCount = 0;
-
-  for (let i = 0; i < files.length; i += 1) {
-    const file = files[i];
-    progressText.textContent = `上传中 ${i + 1} / ${files.length}：${file.name || "截图"}`;
-    progressBar.style.width = `${Math.round((i / files.length) * 100)}%`;
-
-    try {
-      const data = await uploadFile(file);
-      addResult(file, data);
-      successCount += 1;
-    } catch (error) {
-      addError(file.name || "截图", error.message);
-    }
-
-    progressBar.style.width = `${Math.round(((i + 1) / files.length) * 100)}%`;
-  }
-
-  progressText.textContent = `完成：成功 ${successCount} 张，失败 ${files.length - successCount} 张`;
-  setTimeout(() => progressArea.classList.add("hidden"), 2400);
-  fileInput.value = "";
-}
-
-function addResult(file, data) {
-  const url = data.url;
-  const thumb = URL.createObjectURL(file);
-  uploadedUrls.unshift(url);
-  updateBatchActions();
-
-  const item = document.createElement("div");
-  item.className = "result-item";
-  item.innerHTML = `
-    <img class="result-thumb" src="${thumb}" alt="" />
-    <div class="result-info">
-      <div class="result-name">${escapeHtml(file.name || "粘贴的图片")}</div>
-      <a class="result-url" href="${escapeAttribute(url)}" target="_blank" rel="noreferrer">${escapeHtml(url)}</a>
-    </div>
-    <div class="copy-group">
-      <button class="copy-btn" data-copy="${escapeAttribute(url)}">URL</button>
-      <button class="copy-btn" data-copy="${escapeAttribute(data.markdown || `![](${url})`)}">Markdown</button>
-      <button class="copy-btn" data-copy="${escapeAttribute(data.html || `<img src="${url}" alt="" />`)}">HTML</button>
-    </div>
-  `;
-
-  item.querySelectorAll(".copy-btn").forEach((button) => {
-    const label = button.textContent;
-    button.addEventListener("click", () => copyText(button.dataset.copy, button, label));
-  });
-
-  results.prepend(item);
-}
-
-function addError(name, message) {
-  const item = document.createElement("div");
-  item.className = "result-item error-item";
-  item.innerHTML = `
-    <div class="error-mark">!</div>
-    <div class="result-info">
-      <div class="result-name">${escapeHtml(name)}</div>
-      <div class="result-error">${escapeHtml(message)}</div>
-    </div>
-  `;
-  results.prepend(item);
 }
 
 async function copyText(text, button, originalLabel) {
@@ -273,6 +359,52 @@ async function copyText(text, button, originalLabel) {
       button.textContent = originalLabel;
     }, 1600);
   }
+}
+
+function isSupportedFile(file) {
+  return file.type.startsWith("image/") || file.type.startsWith("video/");
+}
+
+function isVideo(file) {
+  return file.kind === "video" || file.contentType?.startsWith("video/");
+}
+
+function defaultFileName(file) {
+  return file.type.startsWith("video/") ? "video.mp4" : "image.png";
+}
+
+function buildMarkdown(file) {
+  return isVideo(file) ? `[${file.name || "视频"}](${file.url})` : `![](${file.url})`;
+}
+
+function buildHtml(file) {
+  return isVideo(file)
+    ? `<video src="${file.url}" controls></video>`
+    : `<img src="${file.url}" alt="" />`;
+}
+
+function buildMeta(file) {
+  const parts = [];
+  if (file.contentType) parts.push(file.contentType);
+  if (file.size) parts.push(formatBytes(file.size));
+  if (file.uploadedAt) parts.push(`上传 ${formatDate(file.uploadedAt)}`);
+  if (file.expiresAt) parts.push(`清理 ${formatDate(file.expiresAt)}`);
+  return parts.join(" · ");
+}
+
+function formatBytes(bytes) {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
+}
+
+function formatDate(value) {
+  return new Date(value).toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function escapeHtml(value) {

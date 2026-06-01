@@ -14,7 +14,7 @@
     <div class="auth-box">
       <div class="auth-logo" aria-hidden="true">IMG</div>
       <h2>Yeadon 图床</h2>
-      <p>输入你收到的访问码，就可以上传图片并生成链接。</p>
+      <p>输入你收到的访问码，就可以上传图片或视频并生成临时链接。</p>
       <form id="auth-form">
         <input class="sr-only" type="text" autocomplete="username" value="friend" aria-hidden="true" tabindex="-1" />
         <input id="auth-input" type="password" placeholder="输入密码" maxlength="20" autocomplete="current-password" />
@@ -29,20 +29,22 @@
     <header>
       <div>
         <div class="logo">Yeadon 图床</div>
-        <p class="header-subtitle">拖拽、粘贴或选择图片，上传后复制链接分享。</p>
+        <p class="header-subtitle">拖拽、粘贴或选择图片/视频，链接保留 7 天。</p>
       </div>
       <button id="logout-btn" class="logout">更换访问码</button>
     </header>
 
     <main>
+      <div id="status-banner" class="status-banner hidden"></div>
+
       <!-- 上传区域 -->
-      <div id="drop-zone" class="drop-zone" role="button" tabindex="0" aria-label="选择或拖拽图片上传">
+      <div id="drop-zone" class="drop-zone" role="button" tabindex="0" aria-label="选择或拖拽图片和视频上传">
         <div class="drop-inner">
           <div class="drop-icon" aria-hidden="true">+</div>
-          <p class="drop-text">把图片放到这里</p>
-          <p class="drop-sub">支持拖拽、粘贴截图、点击选择，多张图片会依次上传。</p>
-          <input id="file-input" type="file" accept="image/*" multiple class="hidden" />
-          <button id="pick-btn" class="btn-primary">选择图片</button>
+          <p class="drop-text">把图片或视频放到这里</p>
+          <p class="drop-sub">支持拖拽、粘贴截图、点击选择，多文件会依次上传并在 7 天后自动清理。</p>
+          <input id="file-input" type="file" accept="image/*,video/*" multiple class="hidden" />
+          <button id="pick-btn" class="btn-primary">选择文件</button>
         </div>
       </div>
 
@@ -61,6 +63,17 @@
 
       <!-- 结果列表 -->
       <div id="results" class="results"></div>
+
+      <section class="history-panel" aria-labelledby="history-title">
+        <div class="history-head">
+          <div>
+            <h2 id="history-title">上传记录</h2>
+            <p id="history-meta">最近上传的文件会显示在这里。</p>
+          </div>
+          <button id="refresh-records-btn" class="btn-secondary">刷新记录</button>
+        </div>
+        <div id="records" class="results"></div>
+      </section>
     </main>
   </div>
 
