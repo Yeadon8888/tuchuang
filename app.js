@@ -23,9 +23,9 @@ const refreshRecordsBtn = document.getElementById("refresh-records-btn");
 
 const uploadedUrls = [];
 let apiFeatures = {
-  video: false,
-  records: false,
-  cleanup: false,
+  video: true,
+  records: true,
+  cleanup: true,
 };
 
 function getToken() {
@@ -152,9 +152,8 @@ async function checkApiFeatures() {
       ? ""
       : "当前 Worker 还不是视频/记录版本。图片仍可上传，视频和记录需要先部署新版 Worker。";
   } catch {
-    apiFeatures = { video: false, records: false, cleanup: false };
-    statusBanner.classList.remove("hidden");
-    statusBanner.textContent = "当前 Worker 还不是视频/记录版本。图片仍可上传，视频和记录需要先部署新版 Worker。";
+    apiFeatures = { video: true, records: false, cleanup: true };
+    statusBanner.classList.add("hidden");
   }
 
   if (apiFeatures.records) loadRecords();
@@ -179,11 +178,9 @@ async function uploadFile(file) {
 
 async function handleFiles(fileList) {
   const incoming = Array.from(fileList);
-  const blockedVideos = incoming.filter((file) => file.type.startsWith("video/") && !apiFeatures.video);
-  const files = incoming.filter(isSupportedFile).filter((file) => apiFeatures.video || !file.type.startsWith("video/"));
-  blockedVideos.forEach((file) => {
-    addError(file.name || "视频文件", "新版 Worker 部署后才支持视频上传");
-  });
+  if (!incoming.length) return;
+
+  const files = incoming.filter(isSupportedFile);
 
   if (!files.length) {
     addError("未找到可上传文件", "请选择图片或视频文件");
