@@ -185,6 +185,72 @@ main {
   line-height: 1.5;
 }
 
+.flow-import-panel {
+  margin-bottom: 20px;
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.flow-import-panel h2 {
+  margin: 0 0 5px;
+  font-size: 20px;
+}
+
+.flow-import-panel p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.flow-import-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.flow-import-form input {
+  min-width: 0;
+  height: 48px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fbfaf7;
+  color: var(--text);
+  outline: none;
+}
+
+.flow-import-form input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, .14);
+}
+
+.flow-import-form .btn-primary {
+  width: auto;
+  white-space: nowrap;
+}
+
+.flow-import-form .btn-primary:disabled {
+  cursor: wait;
+  opacity: .62;
+}
+
+.flow-import-status {
+  min-height: 20px;
+  margin-top: 10px !important;
+}
+
+.flow-import-status.success {
+  color: var(--success);
+}
+
+.flow-import-status.error {
+  color: var(--error);
+}
+
 .drop-zone {
   min-height: 280px;
   display: flex;
@@ -461,9 +527,14 @@ input.sr-only {
 
   .batch-actions,
   .copy-group,
-  .history-head {
+  .history-head,
+  .flow-import-form {
     display: grid;
     grid-template-columns: 1fr;
+  }
+
+  .flow-import-form .btn-primary {
+    width: 100%;
   }
 
   .result-item {

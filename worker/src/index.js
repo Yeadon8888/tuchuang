@@ -2,6 +2,11 @@ const FALLBACK_AUTH_CODE = "1214";
 const DEFAULT_RETENTION_DAYS = 7;
 const DEFAULT_MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const UPLOAD_PREFIX = "uploads/";
+const FLOW_HOST = "labs.google";
+const FLOW_VIDEO_PATHS = [
+  /^\/fx\/tools\/flow\/shared\/video\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/?$/i,
+  /^\/fx\/api\/og-video\/shared\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/?$/i,
+];
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -22,7 +27,7 @@ export default {
         ok: true,
         service: "tuchuang-api",
         retentionDays: getRetentionDays(env),
-        features: ["image-upload", "video-upload", "records", "auto-cleanup"],
+        features: ["image-upload", "video-upload", "flow-import", "records", "auto-cleanup"],
       });
     }
 
@@ -32,6 +37,10 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/upload") {
       return uploadFile(request, env, url);
+    }
+
+    if (request.method === "POST" && url.pathname === "/import/flow") {
+      return importFlowVideo(request, env, url);
     }
 
     if (request.method === "POST" && url.pathname === "/cleanup") {
@@ -105,6 +114,94 @@ async function uploadFile(request, env, url) {
   return json(item);
 }
 
+async function importFlowVideo(request, env, url) {
+  if (!isAuthorized(request.headers.get("X-Auth-Code"), env)) {
+    return json({ error: "认证失败" }, 401);
+  }
+
+  let payload;
+  try {
+    payload = await request.json();
+  } catch {
+    return json({ error: "请求格式错误" }, 400);
+  }
+
+  const videoId = extractFlowVideoId(payload?.url);
+  if (!videoId) {
+    return json({ error: "请输入有效的 Google Flow 分享链接" }, 400);
+  }
+
+  const sourceUrl = `https://${FLOW_HOST}/fx/api/og-video/shared/${videoId}`;
+  let source;
+  try {
+    source = await fetch(sourceUrl, {
+      headers: { Accept: "video/mp4,video/*;q=0.9" },
+    });
+  } catch {
+    return json({ error: "无法连接 Google Flow，请稍后重试" }, 502);
+  }
+
+  if (!source.ok || !source.body) {
+    source.body?.cancel();
+    return json({ error: `Google Flow 视频获取失败（HTTP ${source.status}）` }, 502);
+  }
+
+  const contentType = normalizeContentType(source.headers.get("Content-Type"));
+  if (contentType !== "video/mp4") {
+    await source.body.cancel();
+    return json({ error: "分享链接没有返回 MP4 视频，可能已失效或无权访问" }, 422);
+  }
+
+  const maxUploadBytes = getMaxUploadBytes(env);
+  const contentLength = parseContentLength(source.headers.get("Content-Length"));
+  if (!contentLength) {
+    await source.body.cancel();
+    return json({ error: "Google Flow 没有返回有效的视频大小" }, 502);
+  }
+  if (contentLength > maxUploadBytes) {
+    await source.body.cancel();
+    return json({
+      error: `视频太大，最大支持 ${formatBytes(maxUploadBytes)}`,
+      maxUploadBytes,
+    }, 413);
+  }
+
+  const originalName = `flow-${videoId}.mp4`;
+  const key = buildObjectKey(originalName, contentType);
+  const uploadedAt = new Date().toISOString();
+  let stored;
+
+  try {
+    stored = await env.IMAGES.put(key, source.body, {
+      httpMetadata: {
+        contentType,
+        contentDisposition: `inline; filename="${originalName}"`,
+      },
+      customMetadata: {
+        originalName,
+        kind: "video",
+        uploadedAt,
+        source: "google-flow",
+        sourceId: videoId,
+      },
+    });
+  } catch {
+    return json({ error: "写入 R2 失败，请稍后重试" }, 502);
+  }
+
+  if (!stored) {
+    return json({ error: "写入 R2 失败，请稍后重试" }, 502);
+  }
+
+  const item = buildFileItem(url.origin, {
+    ...stored,
+    contentType,
+    customMetadata: { originalName, kind: "video", uploadedAt },
+  }, getRetentionDays(env));
+
+  return json({ ...item, sourceUrl });
+}
+
 async function listFiles(request, env, url) {
   if (!isAuthorized(request.headers.get("X-Auth-Code"), env)) {
     return json({ error: "认证失败" }, 401);
@@ -158,22 +255,45 @@ async function handleFile(request, env, url) {
     return new Response("Method Not Allowed", { status: 405, headers: corsHeaders });
   }
 
-  const object = await env.IMAGES.get(key);
+  const rangeHeader = request.headers.get("Range");
+  let object;
+  try {
+    object = request.method === "HEAD"
+      ? await env.IMAGES.head(key)
+      : await env.IMAGES.get(key, rangeHeader ? { range: request.headers } : undefined);
+  } catch {
+    return new Response("Range Not Satisfiable", {
+      status: rangeHeader ? 416 : 500,
+      headers: corsHeaders,
+    });
+  }
+
   if (!object) {
     return new Response("Not Found", { status: 404, headers: corsHeaders });
   }
 
-  const headers = {
-    "Content-Type": object.httpMetadata?.contentType || "application/octet-stream",
-    "Cache-Control": "public, max-age=31536000, immutable",
-    "Content-Length": String(object.size),
-    ...corsHeaders,
-  };
+  const headers = new Headers(corsHeaders);
+  object.writeHttpMetadata(headers);
+  headers.set("Content-Type", object.httpMetadata?.contentType || "application/octet-stream");
+  headers.set("Cache-Control", "public, max-age=31536000, immutable");
+  headers.set("Accept-Ranges", "bytes");
+  headers.set("ETag", object.httpEtag);
+  headers.set("X-Content-Type-Options", "nosniff");
 
   if (request.method === "HEAD") {
+    headers.set("Content-Length", String(object.size));
     return new Response(null, { headers });
   }
 
+  if (object.range) {
+    const start = object.range.offset;
+    const end = start + object.range.length - 1;
+    headers.set("Content-Range", `bytes ${start}-${end}/${object.size}`);
+    headers.set("Content-Length", String(object.range.length));
+    return new Response(object.body, { status: 206, headers });
+  }
+
+  headers.set("Content-Length", String(object.size));
   return new Response(object.body, { headers });
 }
 
@@ -269,6 +389,36 @@ function getExtension(name, contentType) {
     "video/webm": "webm",
   };
   return typeMap[contentType] || "bin";
+}
+
+function extractFlowVideoId(value) {
+  if (typeof value !== "string" || value.length > 2048) return "";
+
+  let url;
+  try {
+    url = new URL(value.trim());
+  } catch {
+    return "";
+  }
+
+  if (url.protocol !== "https:" || url.hostname !== FLOW_HOST || url.username || url.password) {
+    return "";
+  }
+
+  for (const pattern of FLOW_VIDEO_PATHS) {
+    const match = url.pathname.match(pattern);
+    if (match) return match[1].toLowerCase();
+  }
+  return "";
+}
+
+function normalizeContentType(value) {
+  return (value || "").split(";", 1)[0].trim().toLowerCase();
+}
+
+function parseContentLength(value) {
+  const length = Number.parseInt(value || "", 10);
+  return Number.isFinite(length) && length > 0 ? length : 0;
 }
 
 function guessContentType(key) {

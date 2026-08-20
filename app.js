@@ -20,10 +20,15 @@ const batchActions = document.getElementById("batch-actions");
 const copyAllBtn = document.getElementById("copy-all-btn");
 const clearResultsBtn = document.getElementById("clear-results-btn");
 const refreshRecordsBtn = document.getElementById("refresh-records-btn");
+const flowImportForm = document.getElementById("flow-import-form");
+const flowUrlInput = document.getElementById("flow-url-input");
+const flowImportBtn = document.getElementById("flow-import-btn");
+const flowImportStatus = document.getElementById("flow-import-status");
 
 const uploadedUrls = [];
 let apiFeatures = {
   video: true,
+  flowImport: true,
   records: true,
   cleanup: true,
 };
@@ -137,6 +142,40 @@ clearResultsBtn.addEventListener("click", () => {
 
 refreshRecordsBtn.addEventListener("click", () => loadRecords());
 
+flowImportForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const flowUrl = flowUrlInput.value.trim();
+  if (!flowUrl) return;
+
+  flowImportBtn.disabled = true;
+  flowImportBtn.textContent = "正在转存...";
+  setFlowImportStatus("正在从 Google Flow 获取视频并写入 R2…");
+
+  try {
+    const res = await fetch(`${API}/import/flow`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Auth-Code": getToken(),
+      },
+      body: JSON.stringify({ url: flowUrl }),
+    });
+    const data = await readApiResponse(res);
+    uploadedUrls.unshift(data.url);
+    updateBatchActions();
+    results.prepend(createFileCard(data));
+    flowUrlInput.value = "";
+    setFlowImportStatus("转存完成，已生成 R2 视频直链。", "success");
+    if (apiFeatures.records) loadRecords();
+  } catch (error) {
+    setFlowImportStatus(error.message, "error");
+    addError("Flow 视频转存失败", error.message);
+  } finally {
+    flowImportBtn.disabled = false;
+    flowImportBtn.textContent = "转存到 R2";
+  }
+});
+
 async function checkApiFeatures() {
   try {
     const res = await fetch(`${API}/healthz`);
@@ -144,15 +183,17 @@ async function checkApiFeatures() {
     const features = data.features || [];
     apiFeatures = {
       video: features.includes("video-upload"),
+      flowImport: features.includes("flow-import"),
       records: features.includes("records"),
       cleanup: features.includes("auto-cleanup"),
     };
-    statusBanner.classList.toggle("hidden", apiFeatures.video && apiFeatures.records);
-    statusBanner.textContent = apiFeatures.video && apiFeatures.records
+    statusBanner.classList.toggle("hidden", apiFeatures.video && apiFeatures.flowImport && apiFeatures.records);
+    statusBanner.textContent = apiFeatures.video && apiFeatures.flowImport && apiFeatures.records
       ? ""
-      : "当前 Worker 还不是视频/记录版本。图片仍可上传，视频和记录需要先部署新版 Worker。";
+      : "当前 Worker 还不是最新版，部分视频转存或记录功能需要先部署新版 Worker。";
+    flowImportBtn.disabled = !apiFeatures.flowImport;
   } catch {
-    apiFeatures = { video: true, records: false, cleanup: true };
+    apiFeatures = { video: true, flowImport: true, records: false, cleanup: true };
     statusBanner.classList.add("hidden");
   }
 
@@ -161,6 +202,11 @@ async function checkApiFeatures() {
     historyMeta.textContent = "部署新版 Worker 后会显示最近上传记录。";
     records.textContent = "";
   }
+}
+
+function setFlowImportStatus(message, state = "") {
+  flowImportStatus.textContent = message;
+  flowImportStatus.className = `flow-import-status${state ? ` ${state}` : ""}`;
 }
 
 async function uploadFile(file) {

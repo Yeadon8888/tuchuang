@@ -37,6 +37,26 @@
     <main>
       <div id="status-banner" class="status-banner hidden"></div>
 
+      <section class="flow-import-panel" aria-labelledby="flow-import-title">
+        <div>
+          <h2 id="flow-import-title">Google Flow 视频转存</h2>
+          <p>粘贴公开的 Labs / Flow 分享链接，视频会由 Worker 直接保存到 R2。</p>
+        </div>
+        <form id="flow-import-form" class="flow-import-form">
+          <label class="sr-only" for="flow-url-input">Google Flow 分享链接</label>
+          <input
+            id="flow-url-input"
+            type="url"
+            inputmode="url"
+            autocomplete="off"
+            placeholder="https://labs.google/fx/tools/flow/shared/video/..."
+            required
+          />
+          <button id="flow-import-btn" class="btn-primary" type="submit">转存到 R2</button>
+        </form>
+        <p id="flow-import-status" class="flow-import-status" aria-live="polite"></p>
+      </section>
+
       <!-- 上传区域 -->
       <div id="drop-zone" class="drop-zone" role="button" tabindex="0" aria-label="选择或拖拽图片和视频上传">
         <div class="drop-inner">
