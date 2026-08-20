@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Omni 制作调度台 · MAILAB</title>
+  <meta name="description" content="MAILAB Omni 批量接单、制作和 R2 回填工作台">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23111412'/%3E%3Cpath d='M8 9h16v14H8z' fill='none' stroke='%23c8ff45' stroke-width='2'/%3E%3Cpath d='M12 13h8M12 17h8' stroke='%23c8ff45' stroke-width='2'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="grid-field" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <a class="brand" href="../" aria-label="返回 Yeadon 图床">
+      <span class="brand-mark">M/O</span>
+      <span>MAILAB · OMNI</span>
+    </a>
+    <div class="server-state" id="server-state">
+      <span class="state-dot"></span>
+      <span id="server-state-text">正在连接后端</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero" aria-labelledby="page-title">
+      <div class="hero-copy">
+        <p class="eyebrow">PRODUCTION DESK / BATCH 01–10</p>
+        <h1 id="page-title">批量接单<br><span>制作调度台</span></h1>
+        <p class="hero-note">领取任务、并行制作、逐条绑定 Flow 视频。R2 验证通过后才会完成飞书订单。</p>
+      </div>
+      <div class="metrics" aria-label="当前工作台统计">
+        <div class="metric">
+          <span class="metric-label">持有订单</span>
+          <strong id="metric-active">00</strong>
+        </div>
+        <div class="metric">
+          <span class="metric-label">转存中</span>
+          <strong id="metric-processing">00</strong>
+        </div>
+        <div class="metric metric-accent">
+          <span class="metric-label">本次完成</span>
+          <strong id="metric-completed">00</strong>
+        </div>
+      </div>
+    </section>
+
+    <section class="control-deck" aria-labelledby="control-title">
+      <div class="section-index">01</div>
+      <div class="control-main">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">CLAIM CONTROL</p>
+            <h2 id="control-title">接单控制</h2>
+          </div>
+          <p>一个浏览器最多同时持有 10 个活动订单。</p>
+        </div>
+
+        <form id="claim-form" class="claim-form">
+          <label class="field-group field-grow">
+            <span>接单人</span>
+            <input id="assignee-input" type="text" maxlength="40" autocomplete="name" placeholder="输入姓名" required>
+          </label>
+          <label class="field-group quantity-field">
+            <span>本次领取</span>
+            <select id="quantity-input" aria-label="本次领取数量">
+              <option value="1">01 单</option>
+              <option value="2">02 单</option>
+              <option value="3">03 单</option>
+              <option value="4">04 单</option>
+              <option value="5" selected>05 单</option>
+              <option value="6">06 单</option>
+              <option value="7">07 单</option>
+              <option value="8">08 单</option>
+              <option value="9">09 单</option>
+              <option value="10">10 单</option>
+            </select>
+          </label>
+          <button id="claim-button" class="button button-primary" type="submit">
+            <span>批量接单</span><span aria-hidden="true">↗</span>
+          </button>
+        </form>
+
+        <div class="control-actions">
+          <button class="button button-quiet" id="recover-button" type="button">校验并恢复</button>
+          <button class="button button-quiet" id="submit-all-button" type="button">提交全部已填链接</button>
+          <button class="button button-quiet danger" id="release-all-button" type="button">释放未转存订单</button>
+          <button class="button button-quiet" id="clear-completed-button" type="button">清理已完成卡片</button>
+        </div>
+        <p class="deck-message" id="deck-message" aria-live="polite">输入接单人后即可开始。</p>
+      </div>
+    </section>
+
+    <section class="orders-section" aria-labelledby="orders-title">
+      <div class="orders-head">
+        <div>
+          <p class="eyebrow">LIVE ORDERS</p>
+          <h2 id="orders-title">制作队列</h2>
+        </div>
+        <div class="legend" aria-label="状态说明">
+          <span><i class="legend-dot ready"></i>待制作</span>
+          <span><i class="legend-dot running"></i>转存中</span>
+          <span><i class="legend-dot done"></i>已完成</span>
+        </div>
+      </div>
+
+      <div class="empty-state" id="empty-state">
+        <span class="empty-number">00</span>
+        <div>
+          <h3>队列为空</h3>
+          <p>批量领取后，每个任务会成为一张独立制作卡片。</p>
+        </div>
+      </div>
+      <div class="orders-grid" id="orders-grid"></div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <template id="order-template">
+    <article class="order-card">
+      <header class="card-head">
+        <div>
+          <p class="card-sequence"></p>
+          <button class="record-id" type="button" data-action="copy-id" title="复制任务 ID"></button>
+        </div>
+        <span class="status-chip"></span>
+      </header>
+
+      <div class="material-grid">
+        <a class="image-frame" target="_blank" rel="noreferrer" title="打开原图">
+          <img alt="任务参考图片" loading="lazy">
+          <span class="image-placeholder">NO IMAGE</span>
+        </a>
+        <div class="prompt-block">
+          <div class="block-label"><span>提示词</span><button type="button" data-action="copy-prompt">复制</button></div>
+          <textarea readonly rows="7"></textarea>
+        </div>
+      </div>
+
+      <div class="material-actions">
+        <button type="button" data-action="copy-image">复制图片</button>
+        <button type="button" data-action="open-flow">打开 Flow</button>
+      </div>
+
+      <label class="flow-field">
+        <span>Flow 单视频分享链接</span>
+        <input type="url" inputmode="url" autocomplete="off" placeholder="https://labs.google/fx/tools/flow/shared/video/..." data-action="flow-input">
+      </label>
+
+      <div class="job-state">
+        <div class="job-state-line">
+          <span class="job-message">等待填写 Flow 链接</span>
+          <span class="job-percent"></span>
+        </div>
+        <div class="job-track"><span></span></div>
+      </div>
+
+      <a class="result-link hidden" target="_blank" rel="noreferrer">打开 R2 成片 ↗</a>
+
+      <footer class="card-actions">
+        <button class="button button-card-primary" type="button" data-action="submit">转存并回填</button>
+        <button class="button button-card-secondary" type="button" data-action="release">释放</button>
+      </footer>
+    </article>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>
