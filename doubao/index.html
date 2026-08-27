@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="粘贴豆包公开分享链接，自动获取无水印视频并转存到 R2。" />
+    <title>豆包视频转存 · Tuchuang</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="paper-noise" aria-hidden="true"></div>
+    <header class="masthead">
+      <a class="brand" href="../" aria-label="返回图床首页">
+        <span class="brand-mark">TU</span>
+        <span>图床工具箱</span>
+      </a>
+      <span class="status-chip"><i></i> R2 ARCHIVE ONLINE</span>
+    </header>
+
+    <main>
+      <section class="hero" aria-labelledby="page-title">
+        <div class="eyebrow">DOUBAO / VIDEO TRANSFER</div>
+        <h1 id="page-title">把分享链接，<br /><em>变成自己的直链。</em></h1>
+        <p class="lede">无需安装插件。粘贴豆包公开分享链接，系统会获取无水印视频、转存 R2，并验证链接可播放后再返回。</p>
+      </section>
+
+      <section class="workbench" aria-label="豆包视频转存工具">
+        <div class="workbench-head">
+          <span>01 / 输入分享链接</span>
+          <button id="paste-button" class="text-button" type="button">从剪贴板粘贴</button>
+        </div>
+        <label class="url-field">
+          <span class="sr-only">豆包公开分享链接</span>
+          <textarea id="share-url" rows="3" spellcheck="false" placeholder="https://www.doubao.com/thread/..."></textarea>
+          <span class="corner corner-a"></span><span class="corner corner-b"></span>
+        </label>
+        <div class="action-row">
+          <p id="input-hint">支持 doubao.com/thread/ 公开分享链接</p>
+          <button id="submit-button" class="submit-button" type="button">
+            <span class="button-label">解析并转存 R2</span>
+            <span class="button-arrow">↗</span>
+          </button>
+        </div>
+      </section>
+
+      <section id="progress-panel" class="progress-panel is-hidden" aria-live="polite">
+        <div class="progress-title">
+          <span id="progress-kicker">PROCESSING</span>
+          <strong id="progress-message">正在准备任务</strong>
+          <span id="elapsed-time">00:00</span>
+        </div>
+        <ol class="steps">
+          <li data-stage="resolving"><b>01</b><span>解析分享页</span></li>
+          <li data-stage="downloading"><b>02</b><span>获取无水印视频</span></li>
+          <li data-stage="uploading"><b>03</b><span>转存 R2</span></li>
+          <li data-stage="completed"><b>04</b><span>验证直链</span></li>
+        </ol>
+        <div class="scan-line"><i id="progress-fill"></i></div>
+      </section>
+
+      <section id="result-panel" class="result-panel is-hidden" aria-live="polite">
+        <div class="result-stamp">VERIFIED</div>
+        <div class="result-copy">
+          <span>转存完成</span>
+          <h2>你的 R2 视频直链</h2>
+          <a id="result-url" href="#" target="_blank" rel="noopener"></a>
+        </div>
+        <div class="result-actions">
+          <button id="copy-button" type="button">复制直链</button>
+          <a id="open-button" href="#" target="_blank" rel="noopener">打开视频 ↗</a>
+        </div>
+      </section>
+
+      <section id="error-panel" class="error-panel is-hidden" aria-live="assertive">
+        <span>TRANSFER INTERRUPTED</span>
+        <strong id="error-message">转存失败，请稍后重试</strong>
+        <button id="retry-button" type="button">重新尝试</button>
+      </section>
+    </main>
+
+    <footer>
+      <span>无水印解析</span><span>Cloudflare R2</span><span>公网可读验证</span>
+    </footer>
+    <script src="./app.js"></script>
+  </body>
+</html>

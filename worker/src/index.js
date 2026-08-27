@@ -3,6 +3,8 @@ const DEFAULT_RETENTION_DAYS = 7;
 const DEFAULT_MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
 const UPLOAD_PREFIX = "uploads/";
 const FLOW_HOST = "labs.google";
+const DOUBAO_THREAD_PATH = /^\/thread\/[^/?#]+\/?$/i;
+const MAX_DOUBAO_HTML_BYTES = 4 * 1024 * 1024;
 const FLOW_VIDEO_PATHS = [
   /^\/fx\/tools\/flow\/shared\/video\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/?$/i,
   /^\/fx\/api\/og-video\/shared\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/?$/i,
@@ -27,7 +29,7 @@ export default {
         ok: true,
         service: "tuchuang-api",
         retentionDays: getRetentionDays(env),
-        features: ["image-upload", "video-upload", "flow-import", "records", "auto-cleanup"],
+        features: ["image-upload", "video-upload", "flow-import", "doubao-html-proxy", "records", "auto-cleanup"],
       });
     }
 
@@ -41,6 +43,14 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/import/flow") {
       return importFlowVideo(request, env, url);
+    }
+
+    if (request.method === "GET" && url.pathname === "/resolve/doubao-thread") {
+      return resolveDoubaoThread(url);
+    }
+
+    if (request.method === "GET" && url.pathname === "/proxy/doubao-thread") {
+      return proxyDoubaoThread(request, env, url);
     }
 
     if (request.method === "POST" && url.pathname === "/cleanup") {
@@ -58,6 +68,107 @@ export default {
     ctx.waitUntil(cleanupExpiredObjects(env));
   },
 };
+
+async function resolveDoubaoThread(url) {
+  const sourceUrl = normalizeDoubaoThreadUrl(url.searchParams.get("url"));
+  if (!sourceUrl) {
+    return json({ error: "请输入有效的豆包公开分享链接" }, 400);
+  }
+  const html = await fetchDoubaoThreadHtml(sourceUrl);
+  if (html instanceof Response) return html;
+  const fallbackApi = extractDoubaoFallbackApi(html);
+  if (!fallbackApi) {
+    return json({ error: "当前网络没有读取到豆包视频数据，请稍后重试" }, 422);
+  }
+  return json({ ok: true, fallbackApi });
+}
+
+async function proxyDoubaoThread(request, env, url) {
+  if (!isAuthorized(request.headers.get("X-Auth-Code"), env)) {
+    return json({ error: "认证失败" }, 401);
+  }
+  const sourceUrl = normalizeDoubaoThreadUrl(url.searchParams.get("url"));
+  if (!sourceUrl) {
+    return json({ error: "请输入有效的豆包公开分享链接" }, 400);
+  }
+
+  const html = await fetchDoubaoThreadHtml(sourceUrl);
+  if (html instanceof Response) return html;
+  return new Response(html, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/html; charset=UTF-8",
+      "Cache-Control": "no-store",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
+async function fetchDoubaoThreadHtml(sourceUrl) {
+  let source;
+  try {
+    source = await fetch(sourceUrl, {
+      redirect: "follow",
+      headers: {
+        Accept: "text/html,application/xhtml+xml",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+      },
+    });
+  } catch {
+    return json({ error: "无法连接豆包公开分享页" }, 502);
+  }
+  if (!source.ok) {
+    source.body?.cancel();
+    return json({ error: `豆包分享页请求失败（HTTP ${source.status}）` }, 502);
+  }
+  const length = Number(source.headers.get("Content-Length") || 0);
+  if (length > MAX_DOUBAO_HTML_BYTES) {
+    source.body?.cancel();
+    return json({ error: "豆包分享页体积异常" }, 502);
+  }
+  const html = await source.text();
+  if (!html || new TextEncoder().encode(html).byteLength > MAX_DOUBAO_HTML_BYTES) {
+    return json({ error: "豆包分享页为空或体积异常" }, 502);
+  }
+  return html;
+}
+
+function normalizeDoubaoThreadUrl(value) {
+  try {
+    const parsed = new URL(String(value || "").trim());
+    if (parsed.protocol !== "https:" || parsed.hostname !== "www.doubao.com" || !DOUBAO_THREAD_PATH.test(parsed.pathname)) {
+      return "";
+    }
+    return `${parsed.origin}${parsed.pathname.replace(/\/$/, "")}`;
+  } catch {
+    return "";
+  }
+}
+
+function extractDoubaoFallbackApi(html) {
+  const text = String(html || "");
+  const markerIndex = text.indexOf("fallback_api");
+  if (markerIndex < 0) return "";
+  const neighborhood = text.slice(Math.max(0, markerIndex - 1000), markerIndex + 8000)
+    .replace(/&amp;|&#38;|&#x26;/gi, "&")
+    .replace(/\\u0026/gi, "&")
+    .replace(/\\u002f/gi, "/")
+    .replace(/\\\//g, "/");
+  const candidates = neighborhood.match(/https:\/\/[^\s\"'<>\\]+/g) || [];
+  for (const candidate of candidates) {
+    try {
+      const parsed = new URL(candidate);
+      const host = parsed.hostname.toLowerCase();
+      if ((host === "snssdk.com" || host.endsWith(".snssdk.com")) && parsed.pathname.includes("/video/fplay/")) {
+        return parsed.toString();
+      }
+    } catch {
+      // Continue with the next candidate.
+    }
+  }
+  return "";
+}
 
 async function uploadFile(request, env, url) {
   if (!isAuthorized(request.headers.get("X-Auth-Code"), env)) {
