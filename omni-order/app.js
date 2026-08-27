@@ -1,5 +1,10 @@
-const API = "https://genvideo.mailab.top";
 const RESOLVER = "https://tuchuang-api.yeadon8888.workers.dev";
+const API_ROUTES = [
+  { base: "https://genvideo.mailab.top", label: "源站直连" },
+  { base: `${RESOLVER}/order-api`, label: "Cloudflare" },
+];
+let API = API_ROUTES[0].base;
+let apiRouteLabel = API_ROUTES[0].label;
 const FLOW_PATH = /^\/fx\/tools\/flow\/shared\/video\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/?$/i;
 const DOUBAO_PATH = /^\/thread\/[^/?#]+\/?$/i;
 const STATE_KEY = "mailab_multi_platform_workbench_v2";
@@ -80,21 +85,38 @@ function bindEvents() {
 
 async function checkHealth() {
   try {
-    const response = await fetch(`${API}/api/health`, { cache: "no-store" });
+    const route = await Promise.any(API_ROUTES.map(probeApiRoute));
+    API = route.base;
+    apiRouteLabel = route.label;
+    serverOnline = true;
+    els.serverState.className = "server-state online";
+    els.serverStateText.textContent = `后端在线 · ${apiRouteLabel} · 飞书与 R2 已连接`;
+  } catch (error) {
+    serverOnline = false;
+    els.serverState.className = "server-state offline";
+    els.serverStateText.textContent = "直连与 Cloudflare 均无法连接";
+  }
+  render();
+}
+
+async function probeApiRoute(route) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const startedAt = performance.now();
+    const response = await fetch(`${route.base}/api/health`, {
+      cache: "no-store",
+      signal: controller.signal,
+    });
     const data = await response.json();
     const features = Array.isArray(data.features) ? data.features : [];
     if (!response.ok || !data.ok || !features.includes("multi-platform-order-web")) {
       throw new Error("后端尚未部署多平台接单功能");
     }
-    serverOnline = true;
-    els.serverState.className = "server-state online";
-    els.serverStateText.textContent = "后端在线 · 飞书与 R2 已连接";
-  } catch (error) {
-    serverOnline = false;
-    els.serverState.className = "server-state offline";
-    els.serverStateText.textContent = error.message || "后端连接失败";
+    return { ...route, latency: performance.now() - startedAt };
+  } finally {
+    clearTimeout(timeout);
   }
-  renderControls();
 }
 
 async function claimBatch(event) {

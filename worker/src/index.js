@@ -5,6 +5,19 @@ const UPLOAD_PREFIX = "uploads/";
 const FLOW_HOST = "labs.google";
 const DOUBAO_THREAD_PATH = /^\/thread\/[^/?#]+\/?$/i;
 const MAX_DOUBAO_HTML_BYTES = 4 * 1024 * 1024;
+const ORDER_API_ORIGIN = "https://genvideo.mailab.top";
+const ORDER_API_PREFIX = "/order-api";
+const MAX_ORDER_API_BODY_BYTES = 1024 * 1024;
+const ORDER_API_ROUTES = new Map([
+  ["GET /api/health", true],
+  ["GET /api/image-proxy", true],
+  ["POST /api/order/claim-batch", true],
+  ["POST /api/order/recover", true],
+  ["POST /api/order/complete", true],
+  ["POST /api/order/complete-status", true],
+  ["POST /api/order/release-batch", true],
+  ["POST /api/release", true],
+]);
 const FLOW_VIDEO_PATHS = [
   /^\/fx\/tools\/flow\/shared\/video\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/?$/i,
   /^\/fx\/api\/og-video\/shared\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/?$/i,
@@ -24,12 +37,16 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
+    if (url.pathname === ORDER_API_PREFIX || url.pathname.startsWith(`${ORDER_API_PREFIX}/`)) {
+      return proxyOrderApi(request, url);
+    }
+
     if (request.method === "GET" && url.pathname === "/healthz") {
       return json({
         ok: true,
         service: "tuchuang-api",
         retentionDays: getRetentionDays(env),
-        features: ["image-upload", "video-upload", "flow-import", "doubao-html-proxy", "records", "auto-cleanup"],
+        features: ["image-upload", "video-upload", "flow-import", "doubao-html-proxy", "order-api-gateway", "records", "auto-cleanup"],
       });
     }
 
@@ -68,6 +85,58 @@ export default {
     ctx.waitUntil(cleanupExpiredObjects(env));
   },
 };
+
+async function proxyOrderApi(request, url) {
+  const upstreamPath = url.pathname.slice(ORDER_API_PREFIX.length) || "/";
+  if (!ORDER_API_ROUTES.has(`${request.method} ${upstreamPath}`)) {
+    return json({ error: "不支持的接单 API 路径" }, 404);
+  }
+
+  const contentLength = Number.parseInt(request.headers.get("Content-Length") || "0", 10);
+  if (contentLength > MAX_ORDER_API_BODY_BYTES) {
+    return json({ error: "接单 API 请求体过大" }, 413);
+  }
+
+  const upstreamUrl = new URL(upstreamPath, ORDER_API_ORIGIN);
+  upstreamUrl.search = url.search;
+  const headers = new Headers();
+  for (const name of ["Accept", "Accept-Language", "Content-Type", "Range"]) {
+    const value = request.headers.get(name);
+    if (value) headers.set(name, value);
+  }
+  headers.set("X-Mailab-Edge-Gateway", "tuchuang-api");
+
+  let body;
+  if (!["GET", "HEAD"].includes(request.method)) {
+    body = await request.arrayBuffer();
+    if (body.byteLength > MAX_ORDER_API_BODY_BYTES) {
+      return json({ error: "接单 API 请求体过大" }, 413);
+    }
+  }
+
+  let upstream;
+  try {
+    upstream = await fetch(upstreamUrl, {
+      method: request.method,
+      headers,
+      body,
+      redirect: "manual",
+    });
+  } catch {
+    return json({ error: "Cloudflare 无法连接接单服务器" }, 502);
+  }
+
+  const responseHeaders = new Headers(upstream.headers);
+  for (const [name, value] of Object.entries(corsHeaders)) responseHeaders.set(name, value);
+  responseHeaders.delete("Set-Cookie");
+  responseHeaders.set("Cache-Control", "no-store");
+  responseHeaders.set("X-Mailab-Route", "cloudflare");
+  return new Response(upstream.body, {
+    status: upstream.status,
+    statusText: upstream.statusText,
+    headers: responseHeaders,
+  });
+}
 
 async function resolveDoubaoThread(url) {
   const sourceUrl = normalizeDoubaoThreadUrl(url.searchParams.get("url"));
