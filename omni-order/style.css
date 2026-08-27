@@ -363,6 +363,14 @@ input:focus, select:focus, textarea:focus {
 .order-card[data-state="processing"]::before, .order-card[data-state="submitting"]::before { background: var(--orange); }
 .order-card[data-state="completed"]::before { background: var(--acid); }
 .order-card[data-state="error"]::before, .order-card[data-state="lost"]::before { background: var(--red); }
+.order-card[data-platform="omni"]::after, .order-card[data-platform="doubao"]::after {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  background: var(--blue);
+}
+.order-card[data-platform="doubao"]::after { background: var(--orange); }
 
 .card-head {
   display: flex;
@@ -386,13 +394,19 @@ input:focus, select:focus, textarea:focus {
   white-space: nowrap;
 }
 
-.status-chip {
+.card-chips { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+
+.status-chip, .platform-chip {
   padding: 7px 9px;
   border: 1px solid var(--line-strong);
   color: var(--paper-muted);
   font: 700 10px/1 var(--mono);
   letter-spacing: .06em;
 }
+
+.platform-chip { border-color: rgba(97, 169, 255, .45); color: var(--blue); }
+.order-card[data-platform="doubao"] .platform-chip { border-color: rgba(255, 120, 75, .5); color: var(--orange); }
+.order-card[data-platform="unknown"] .platform-chip { border-style: dashed; color: var(--paper-muted); }
 
 .order-card[data-state="processing"] .status-chip, .order-card[data-state="submitting"] .status-chip { border-color: rgba(255, 120, 75, .5); color: var(--orange); }
 .order-card[data-state="completed"] .status-chip { border-color: rgba(201, 255, 67, .5); color: var(--acid); }

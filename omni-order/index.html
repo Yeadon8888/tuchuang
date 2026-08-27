@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>Omni 制作调度台 · MAILAB</title>
-  <meta name="description" content="MAILAB Omni 批量接单、制作和 R2 回填工作台">
+  <title>多平台制作调度台 · MAILAB</title>
+  <meta name="description" content="MAILAB Omni 与豆包批量接单、制作、R2 转存和飞书回填工作台">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23111412'/%3E%3Cpath d='M8 9h16v14H8z' fill='none' stroke='%23c8ff45' stroke-width='2'/%3E%3Cpath d='M12 13h8M12 17h8' stroke='%23c8ff45' stroke-width='2'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -14,8 +14,8 @@
 
   <header class="topbar">
     <a class="brand" href="../" aria-label="返回 Yeadon 图床">
-      <span class="brand-mark">M/O</span>
-      <span>MAILAB · OMNI</span>
+      <span class="brand-mark">M/X</span>
+      <span>MAILAB · ORDERS</span>
     </a>
     <div class="server-state" id="server-state">
       <span class="state-dot"></span>
@@ -26,9 +26,9 @@
   <main>
     <section class="hero" aria-labelledby="page-title">
       <div class="hero-copy">
-        <p class="eyebrow">PRODUCTION DESK / BATCH 01–10</p>
+        <p class="eyebrow">MULTI-PLATFORM DESK / BATCH 01–10</p>
         <h1 id="page-title">批量接单<br><span>制作调度台</span></h1>
-        <p class="hero-note">领取任务、并行制作、逐条绑定 Flow 视频。R2 验证通过后才会完成飞书订单。</p>
+        <p class="hero-note">从同一个公共任务池批量接单，在 Omni 或豆包完成制作；视频转存 R2 并验证可访问后，才会自动回填飞书。</p>
       </div>
       <div class="metrics" aria-label="当前工作台统计">
         <div class="metric">
@@ -54,7 +54,7 @@
             <p class="eyebrow">CLAIM CONTROL</p>
             <h2 id="control-title">接单控制</h2>
           </div>
-          <p>一个浏览器最多同时持有 10 个活动订单。</p>
+          <p>接单时不选平台；提交回填链接后自动识别 Omni 或豆包，多人同时操作由后端锁保证不重单。</p>
         </div>
 
         <form id="claim-form" class="claim-form">
@@ -84,8 +84,8 @@
 
         <div class="control-actions">
           <button class="button button-quiet" id="recover-button" type="button">校验并恢复</button>
-          <button class="button button-quiet" id="submit-all-button" type="button">提交全部已填链接</button>
-          <button class="button button-quiet danger" id="release-all-button" type="button">释放未转存订单</button>
+          <button class="button button-quiet" id="submit-all-button" type="button">提交全部有效链接</button>
+          <button class="button button-quiet danger" id="release-all-button" type="button">释放全部未转存订单</button>
           <button class="button button-quiet" id="clear-completed-button" type="button">清理已完成卡片</button>
         </div>
         <p class="deck-message" id="deck-message" aria-live="polite">输入接单人后即可开始。</p>
@@ -125,7 +125,7 @@
           <p class="card-sequence"></p>
           <button class="record-id" type="button" data-action="copy-id" title="复制任务 ID"></button>
         </div>
-        <span class="status-chip"></span>
+        <div class="card-chips"><span class="platform-chip"></span><span class="status-chip"></span></div>
       </header>
 
       <div class="material-grid">
@@ -141,12 +141,12 @@
 
       <div class="material-actions">
         <button type="button" data-action="copy-image">复制图片</button>
-        <button type="button" data-action="open-flow">打开 Flow</button>
+        <button type="button" data-action="open-platform">打开制作平台</button>
       </div>
 
       <label class="flow-field">
-        <span>Flow 单视频分享链接</span>
-        <input type="url" inputmode="url" autocomplete="off" placeholder="https://labs.google/fx/tools/flow/shared/video/..." data-action="flow-input">
+        <span class="share-label">视频分享链接</span>
+        <input type="url" inputmode="url" autocomplete="off" placeholder="粘贴视频公开分享链接" data-action="share-input">
       </label>
 
       <div class="job-state">
