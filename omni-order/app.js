@@ -9,7 +9,9 @@ const FLOW_PATH = /^\/fx\/tools\/flow\/shared\/video\/([0-9a-f]{8}-[0-9a-f]{4}-[
 const DOUBAO_PATH = /^\/thread\/[^/?#]+\/?$/i;
 const STATE_KEY = "mailab_multi_platform_workbench_v2";
 const LEGACY_STATE_KEY = "mailab_omni_batch_workbench_v1";
-const MAX_ACTIVE_ORDERS = 10;
+const BATCH_SIZE_OPTIONS = [10, 30, 50, 100];
+const DEFAULT_BATCH_SIZE = 10;
+const MAX_ACTIVE_ORDERS = 100;
 
 const platformMeta = {
   Omni: { slug: "omni", input: "Flow 单视频公开分享链接", open: "打开 Flow", url: "https://labs.google/fx/tools/flow" },
@@ -58,7 +60,7 @@ bootstrap();
 
 function bootstrap() {
   els.assignee.value = state.assignee;
-  els.quantity.value = String(state.quantity || 5);
+  els.quantity.value = String(state.quantity);
   bindEvents();
   render();
   checkHealth();
@@ -72,7 +74,7 @@ function bindEvents() {
     saveState();
   });
   els.quantity.addEventListener("change", () => {
-    state.quantity = clamp(Number(els.quantity.value) || 5, 1, MAX_ACTIVE_ORDERS);
+    state.quantity = normalizeBatchSize(els.quantity.value);
     saveState();
   });
   els.recover.addEventListener("click", () => recoverOrders(false));
@@ -123,7 +125,7 @@ async function claimBatch(event) {
   event.preventDefault();
   if (claimBusy) return;
   const assignee = els.assignee.value.trim();
-  const count = clamp(Number(els.quantity.value) || 5, 1, MAX_ACTIVE_ORDERS);
+  const count = normalizeBatchSize(els.quantity.value);
   const activeCount = activeOrders().length;
   if (!assignee) return setDeck("请先填写接单人。", "error");
   if (activeCount + count > MAX_ACTIVE_ORDERS) {
@@ -503,10 +505,10 @@ function loadState() {
     const legacy = !localStorage.getItem(STATE_KEY);
     const parsed = JSON.parse(localStorage.getItem(STATE_KEY) || localStorage.getItem(LEGACY_STATE_KEY) || "{}");
     return {
-      assignee: String(parsed.assignee || ""), quantity: clamp(Number(parsed.quantity) || 5, 1, MAX_ACTIVE_ORDERS),
-      orders: Array.isArray(parsed.orders) ? parsed.orders.map((order) => normalizeOrder({ ...order, platform: order.platform || (legacy ? "Omni" : "") })).filter((order) => order.recordId && order.lockId).slice(-30) : [],
+      assignee: String(parsed.assignee || ""), quantity: normalizeBatchSize(parsed.quantity),
+      orders: Array.isArray(parsed.orders) ? parsed.orders.map((order) => normalizeOrder({ ...order, platform: order.platform || (legacy ? "Omni" : "") })).filter((order) => order.recordId && order.lockId).slice(-(MAX_ACTIVE_ORDERS + 12)) : [],
     };
-  } catch { return { assignee: "", quantity: 5, orders: [] }; }
+  } catch { return { assignee: "", quantity: DEFAULT_BATCH_SIZE, orders: [] }; }
 }
 
 function saveState() {
@@ -588,5 +590,6 @@ function setDeck(message, tone = "") { els.deckMessage.textContent = message; el
 function showToast(message, tone = "") { clearTimeout(toastTimer); els.toast.textContent = message; els.toast.className = `toast show${tone ? ` ${tone}` : ""}`; toastTimer = setTimeout(() => { els.toast.className = "toast"; }, 2600); }
 function shortId(value) { const text = String(value || ""); return text.length > 12 ? `${text.slice(0, 6)}…${text.slice(-4)}` : text; }
 function pad(value) { return String(value).padStart(2, "0"); }
+function normalizeBatchSize(value) { const size = Number(value); return BATCH_SIZE_OPTIONS.includes(size) ? size : DEFAULT_BATCH_SIZE; }
 function clamp(value, min, max) { return Math.min(max, Math.max(min, value)); }
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
