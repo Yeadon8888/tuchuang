@@ -98,7 +98,7 @@ async function checkHealth() {
     els.serverState.className = "server-state offline";
     els.serverStateText.textContent = "直连与 Cloudflare 均无法连接";
   }
-  render();
+  renderControls();
 }
 
 async function probeApiRoute(route) {
@@ -241,7 +241,7 @@ async function submitOrder(recordId) {
     order.state = "error";
     order.message = "无法识别链接，请粘贴有效的 Omni Flow 或豆包公开分享链接";
     saveState();
-    render();
+    updateOrderCard(recordId);
     return;
   }
   const duplicate = state.orders.find((item) => {
@@ -252,7 +252,7 @@ async function submitOrder(recordId) {
     order.state = "error";
     order.message = `该视频已填写在 ${shortId(duplicate.recordId)}，请检查对应关系`;
     saveState();
-    render();
+    updateOrderCard(recordId);
     return;
   }
 
@@ -261,7 +261,7 @@ async function submitOrder(recordId) {
   order.state = "submitting";
   order.message = detected.platform === "豆包" ? "正在读取豆包公开分享页" : "正在绑定 Flow 分享链接";
   saveState();
-  render();
+  updateOrderCard(recordId);
   try {
     const fallbackApi = detected.platform === "豆包" ? await resolveDoubaoFallback(detected.url) : "";
     const data = await api("/api/order/complete", {
@@ -277,14 +277,14 @@ async function submitOrder(recordId) {
     order.jobId = data.jobId;
     order.message = data.message || "正在转存 R2";
     saveState();
-    render();
+    updateOrderCard(recordId);
     pollOrder(order.recordId);
   } catch (error) {
     order.state = "error";
     order.jobId = "";
     order.message = error.message || "提交失败，订单仍保持接单中";
     saveState();
-    render();
+    updateOrderCard(recordId);
   }
 }
 
@@ -314,18 +314,18 @@ async function pollOrder(recordId) {
         networkErrors = 0;
         if (data.status === "completed") {
           Object.assign(current, { state: "completed", jobId: "", resultUrl: data.videoUrl || "", message: "R2 已验证，飞书订单已完成", completedAt: Date.now() });
-          saveState(); render(); showToast(`${shortId(recordId)} 已完成回填`); return;
+          saveState(); updateOrderCard(recordId); showToast(`${shortId(recordId)} 已完成回填`); return;
         }
         if (data.status === "failed" || data.status === "missing" || data.ok === false) {
           Object.assign(current, { state: "error", jobId: "", message: data.error || data.message || "转存失败，可使用原链接重试" });
-          saveState(); render(); return;
+          saveState(); updateOrderCard(recordId); return;
         }
         current.message = data.message || "正在转存 R2";
-        saveState(); render();
+        saveState(); updateOrderCard(recordId);
       } catch (error) {
         networkErrors += 1;
         current.message = networkErrors >= 3 ? "网络暂时不稳定，仍在自动查询后台状态" : (error.message || "状态查询失败，正在重试");
-        saveState(); render();
+        saveState(); updateOrderCard(recordId);
       }
       await delay(networkErrors ? 4000 : 2000);
     }
@@ -403,24 +403,18 @@ function render() {
   state.orders.forEach((order, index) => fragment.appendChild(renderOrder(order, index)));
   els.grid.replaceChildren(fragment);
   els.empty.classList.toggle("hidden", state.orders.length > 0);
-  els.metricActive.textContent = pad(activeOrders().length);
-  els.metricProcessing.textContent = pad(state.orders.filter((order) => ["submitting", "processing"].includes(order.state)).length);
-  els.metricCompleted.textContent = pad(state.orders.filter((order) => order.state === "completed").length);
+  renderMetrics();
   renderControls();
 }
 
 function renderOrder(order, index) {
   const article = els.template.content.firstElementChild.cloneNode(true);
-  const status = statusMeta[order.state] || statusMeta.claimed;
   article.dataset.recordId = order.recordId;
-  article.dataset.state = order.state;
-  article.dataset.platform = platformMeta[order.platform].slug;
   article.style.animationDelay = `${Math.min(index * 45, 360)}ms`;
   article.querySelector(".card-sequence").textContent = `ORDER ${pad(index + 1)}`;
   const recordButton = article.querySelector(".record-id");
   recordButton.textContent = order.recordId;
   recordButton.title = `复制任务 ID：${order.recordId}`;
-  article.querySelector(".status-chip").textContent = status.label;
 
   const frame = article.querySelector(".image-frame");
   const image = frame.querySelector("img");
@@ -429,21 +423,48 @@ function renderOrder(order, index) {
   } else { frame.removeAttribute("href"); image.removeAttribute("src"); }
   article.querySelector("textarea").value = order.prompt || "当前任务没有提示词";
 
-  const input = article.querySelector('[data-action="share-input"]');
-  input.value = order.shareUrl || "";
-  input.disabled = ["submitting", "processing", "completed", "lost"].includes(order.state);
+  syncOrderCard(article, order);
+  article.querySelector('[data-action="copy-prompt"]').disabled = !order.prompt;
+  article.querySelector('[data-action="copy-image"]').disabled = !order.imageUrl;
+  return article;
+}
+
+function updateOrderCard(recordId) {
+  const order = findOrder(recordId);
+  const article = Array.from(els.grid.children).find((card) => card.dataset.recordId === recordId);
+  if (!order || !article) return render();
+  syncOrderCard(article, order);
+  renderMetrics();
+  renderControls();
+}
+
+function syncOrderCard(article, order) {
+  const status = statusMeta[order.state] || statusMeta.claimed;
+  article.dataset.state = order.state;
   renderCardIdentity(article, order);
+  article.querySelector(".status-chip").textContent = status.label;
   article.querySelector(".job-message").textContent = order.message || status.message;
   article.querySelector(".job-percent").textContent = order.state === "processing" ? "R2" : (order.state === "completed" ? "100%" : "");
+
+  const input = article.querySelector('[data-action="share-input"]');
+  if (document.activeElement !== input) input.value = order.shareUrl || "";
+  input.disabled = ["submitting", "processing", "completed", "lost"].includes(order.state);
+
   const result = article.querySelector(".result-link");
-  if (order.resultUrl) { result.href = order.resultUrl; result.classList.remove("hidden"); }
+  result.classList.toggle("hidden", !order.resultUrl);
+  if (order.resultUrl) result.href = order.resultUrl;
+  else result.removeAttribute("href");
+
   const submit = article.querySelector('[data-action="submit"]');
   submit.disabled = ["submitting", "processing", "completed", "lost"].includes(order.state);
   submit.textContent = order.state === "error" ? "重新转存并回填" : (order.state === "completed" ? "已完成" : "转存并回填");
   article.querySelector('[data-action="release"]').disabled = !["claimed", "error"].includes(order.state);
-  article.querySelector('[data-action="copy-prompt"]').disabled = !order.prompt;
-  article.querySelector('[data-action="copy-image"]').disabled = !order.imageUrl;
-  return article;
+}
+
+function renderMetrics() {
+  els.metricActive.textContent = pad(activeOrders().length);
+  els.metricProcessing.textContent = pad(state.orders.filter((order) => ["submitting", "processing"].includes(order.state)).length);
+  els.metricCompleted.textContent = pad(state.orders.filter((order) => order.state === "completed").length);
 }
 
 function renderCardIdentity(article, order) {
