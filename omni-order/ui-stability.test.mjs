@@ -29,3 +29,18 @@ test("submitting one share link keeps the other cards mounted", () => {
   assert.match(body, /updateOrderCard\(recordId\)/);
   assert.doesNotMatch(body, /\brender\(\)/);
 });
+
+test("saving state does not reorder completed cards", () => {
+  const body = functionBody("saveState");
+  assert.doesNotMatch(body, /state\.orders\s*=/);
+  assert.doesNotMatch(body, /\.sort\s*\(/);
+});
+
+test("claim requests can include selected pending-view row numbers", () => {
+  const body = functionBody("claimBatch");
+  assert.match(body, /rowNumbers/);
+  assert.match(source, /function parseRowNumbers\(/);
+  const parse = new Function("value", "MAX_ACTIVE_ORDERS", functionBody("parseRowNumbers"));
+  assert.deepEqual(parse("2, 4, 8-10", 100), [2, 4, 8, 9, 10]);
+  assert.throws(() => parse("10-8", 100), /范围无效/);
+});

@@ -33,6 +33,7 @@ const els = {
   serverStateText: document.getElementById("server-state-text"),
   claimForm: document.getElementById("claim-form"),
   assignee: document.getElementById("assignee-input"),
+  rowNumbers: document.getElementById("row-numbers-input"),
   quantity: document.getElementById("quantity-input"),
   claim: document.getElementById("claim-button"),
   recover: document.getElementById("recover-button"),
@@ -77,6 +78,7 @@ function bindEvents() {
     state.quantity = normalizeBatchSize(els.quantity.value);
     saveState();
   });
+  els.rowNumbers.addEventListener("input", renderControls);
   els.recover.addEventListener("click", () => recoverOrders(false));
   els.submitAll.addEventListener("click", submitAllReady);
   els.releaseAll.addEventListener("click", releaseAllUnsubmitted);
@@ -125,19 +127,23 @@ async function claimBatch(event) {
   event.preventDefault();
   if (claimBusy) return;
   const assignee = els.assignee.value.trim();
-  const count = normalizeBatchSize(els.quantity.value);
+  let rowNumbers;
+  try { rowNumbers = parseRowNumbers(els.rowNumbers.value); }
+  catch (error) { return setDeck(error.message, "error"); }
+  const targeted = rowNumbers.length > 0;
+  const count = targeted ? rowNumbers.length : normalizeBatchSize(els.quantity.value);
   const activeCount = activeOrders().length;
   if (!assignee) return setDeck("请先填写接单人。", "error");
   if (activeCount + count > MAX_ACTIVE_ORDERS) {
     return setDeck(`当前已持有 ${activeCount} 单，本次最多还能领取 ${MAX_ACTIVE_ORDERS - activeCount} 单。`, "error");
   }
   state.assignee = assignee;
-  state.quantity = count;
+  if (!targeted) state.quantity = count;
   claimBusy = true;
-  setDeck(`正在从公共任务池领取 ${count} 个订单…`, "warn");
+  setDeck(targeted ? `正在领取待接单视图第 ${rowNumbers.join("、")} 行…` : `正在从公共任务池领取 ${count} 个订单…`, "warn");
   renderControls();
   try {
-    const data = await api("/api/order/claim-batch", { assignee, count }, 120000);
+    const data = await api("/api/order/claim-batch", { assignee, count, ...(targeted ? { rowNumbers } : {}) }, 120000);
     if (!data.ok || !Array.isArray(data.orders) || !data.orders.length) throw new Error(data.error || "暂无待接单任务");
     const known = new Set(state.orders.map((order) => order.recordId));
     const added = data.orders
@@ -146,8 +152,9 @@ async function claimBatch(event) {
     state.orders.push(...added);
     saveState();
     render();
+    if (targeted) els.rowNumbers.value = "";
     const suffix = data.partial ? `；其余未领取：${data.error || "任务不足"}` : "";
-    setDeck(`成功领取 ${added.length} 单${suffix}`, data.partial ? "warn" : "success");
+    setDeck(`${targeted ? "指定行号" : "批量"}成功领取 ${added.length} 单${suffix}`, data.partial ? "warn" : "success");
     showToast(`已加入 ${added.length} 张制作卡片`);
   } catch (error) {
     setDeck(error.message || "批量接单失败", "error");
@@ -411,7 +418,7 @@ function renderOrder(order, index) {
   const article = els.template.content.firstElementChild.cloneNode(true);
   article.dataset.recordId = order.recordId;
   article.style.animationDelay = `${Math.min(index * 45, 360)}ms`;
-  article.querySelector(".card-sequence").textContent = `ORDER ${pad(index + 1)}`;
+  article.querySelector(".card-sequence").textContent = `ORDER ${pad(index + 1)}${order.rowNumber ? ` · 飞书行 ${order.rowNumber}` : ""}`;
   const recordButton = article.querySelector(".record-id");
   recordButton.textContent = order.recordId;
   recordButton.title = `复制任务 ID：${order.recordId}`;
@@ -483,12 +490,14 @@ function renderCardIdentity(article, order) {
 
 function renderControls() {
   const active = activeOrders().length;
+  const hasRowSelection = Boolean(els.rowNumbers.value.trim());
   const releasable = state.orders.some((order) => ["claimed", "error"].includes(order.state));
   const submittable = state.orders.some((order) => ["claimed", "error"].includes(order.state) && detectPlatform(order.shareUrl).platform);
   els.assignee.disabled = active > 0 || claimBusy || batchBusy;
-  els.quantity.disabled = claimBusy || batchBusy || active >= MAX_ACTIVE_ORDERS;
+  els.rowNumbers.disabled = claimBusy || batchBusy || active >= MAX_ACTIVE_ORDERS;
+  els.quantity.disabled = claimBusy || batchBusy || active >= MAX_ACTIVE_ORDERS || hasRowSelection;
   els.claim.disabled = !serverOnline || claimBusy || batchBusy || active >= MAX_ACTIVE_ORDERS;
-  els.claim.querySelector("span").textContent = claimBusy ? "接单中…" : "批量接单";
+  els.claim.querySelector("span").textContent = claimBusy ? "接单中…" : (hasRowSelection ? "领取指定行" : "批量接单");
   els.recover.disabled = batchBusy || !active;
   els.submitAll.disabled = batchBusy || !submittable;
   els.releaseAll.disabled = batchBusy || !releasable;
@@ -515,6 +524,7 @@ function normalizeOrder(value) {
   return {
     recordId: String(value?.recordId || ""), lockId: String(value?.lockId || ""), assignee: String(value?.assignee || ""),
     platform, prompt: String(value?.prompt || ""), imageUrl: normalizeHttpUrl(value?.imageUrl),
+    rowNumber: Number.isSafeInteger(Number(value?.rowNumber)) && Number(value.rowNumber) > 0 ? Number(value.rowNumber) : 0,
     shareUrl: String(value?.shareUrl || value?.flowShareUrl || ""), resultUrl: normalizeHttpUrl(value?.resultUrl || value?.videoUrl),
     state: Object.hasOwn(statusMeta, requestedState) ? requestedState : "claimed", jobId: String(value?.jobId || ""),
     message: String(value?.message || ""), createdAt: Number(value?.createdAt || Date.now()), completedAt: Number(value?.completedAt || 0),
@@ -527,15 +537,12 @@ function loadState() {
     const parsed = JSON.parse(localStorage.getItem(STATE_KEY) || localStorage.getItem(LEGACY_STATE_KEY) || "{}");
     return {
       assignee: String(parsed.assignee || ""), quantity: normalizeBatchSize(parsed.quantity),
-      orders: Array.isArray(parsed.orders) ? parsed.orders.map((order) => normalizeOrder({ ...order, platform: order.platform || (legacy ? "Omni" : "") })).filter((order) => order.recordId && order.lockId).slice(-(MAX_ACTIVE_ORDERS + 12)) : [],
+      orders: Array.isArray(parsed.orders) ? parsed.orders.map((order) => normalizeOrder({ ...order, platform: order.platform || (legacy ? "Omni" : "") })).filter((order) => order.recordId && order.lockId) : [],
     };
   } catch { return { assignee: "", quantity: DEFAULT_BATCH_SIZE, orders: [] }; }
 }
 
 function saveState() {
-  const active = state.orders.filter((order) => !["completed", "lost"].includes(order.state));
-  const history = state.orders.filter((order) => ["completed", "lost"].includes(order.state)).slice(-12);
-  state.orders = [...active, ...history];
   localStorage.setItem(STATE_KEY, JSON.stringify(state));
 }
 
@@ -612,5 +619,26 @@ function showToast(message, tone = "") { clearTimeout(toastTimer); els.toast.tex
 function shortId(value) { const text = String(value || ""); return text.length > 12 ? `${text.slice(0, 6)}…${text.slice(-4)}` : text; }
 function pad(value) { return String(value).padStart(2, "0"); }
 function normalizeBatchSize(value) { const size = Number(value); return BATCH_SIZE_OPTIONS.includes(size) ? size : DEFAULT_BATCH_SIZE; }
+function parseRowNumbers(value) {
+  const text = String(value || "").trim();
+  if (!text) return [];
+  const tokens = text.replace(/\s*([-~～—–])\s*/g, "$1").split(/[,，、\s]+/).filter(Boolean);
+  const rows = [];
+  const seen = new Set();
+  for (const token of tokens) {
+    const match = token.match(/^(\d+)(?:[-~～—–](\d+))?$/);
+    if (!match) throw new Error(`行号格式不正确：${token}`);
+    const start = Number(match[1]);
+    const end = Number(match[2] || match[1]);
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 1 || end < start || end > 1000000) {
+      throw new Error(`行号范围无效：${token}`);
+    }
+    for (let row = start; row <= end; row += 1) {
+      if (!seen.has(row)) { seen.add(row); rows.push(row); }
+      if (rows.length > MAX_ACTIVE_ORDERS) throw new Error(`一次最多指定 ${MAX_ACTIVE_ORDERS} 个行号`);
+    }
+  }
+  return rows;
+}
 function clamp(value, min, max) { return Math.min(max, Math.max(min, value)); }
 function delay(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }

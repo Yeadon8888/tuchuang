@@ -62,6 +62,11 @@
             <span>接单人</span>
             <input id="assignee-input" type="text" maxlength="40" autocomplete="name" placeholder="输入姓名" required>
           </label>
+          <label class="field-group row-number-field">
+            <span>指定行号（可选）</span>
+            <input id="row-numbers-input" type="text" inputmode="numeric" autocomplete="off" placeholder="如 12,15,20-25" aria-describedby="row-number-help">
+            <small id="row-number-help">按待接单视图当前行号领取；留空则按数量领取</small>
+          </label>
           <label class="field-group quantity-field">
             <span>本次领取</span>
             <select id="quantity-input" aria-label="本次领取数量">
@@ -160,6 +165,6 @@
     </article>
   </template>
 
-  <script src="app.js?v=20260828-ui-stability"></script>
+  <script src="app.js?v=20260831-row-claim"></script>
 </body>
 </html>

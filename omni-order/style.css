@@ -221,9 +221,9 @@ h1 span {
 
 .claim-form {
   display: grid;
-  grid-template-columns: minmax(240px, 1fr) 160px 190px;
+  grid-template-columns: minmax(210px, 1fr) minmax(250px, 1.15fr) 140px 190px;
   gap: 12px;
-  margin-top: 28px;
+  margin: 28px 0 20px;
 }
 
 .field-group { display: grid; gap: 8px; }
@@ -233,6 +233,18 @@ h1 span {
   letter-spacing: .09em;
   text-transform: uppercase;
 }
+
+.row-number-field { position: relative; }
+.row-number-field small {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 5px;
+  color: var(--paper-muted);
+  font: 500 10px/1.35 var(--mono);
+}
+
+.row-number-field input:not(:placeholder-shown) { border-color: rgba(201, 255, 67, .65); }
 
 input, select, textarea {
   border: 1px solid var(--line-strong);
@@ -530,7 +542,7 @@ input:focus, select:focus, textarea:focus {
   .section-index { padding: 16px 20px; border-right: 0; border-bottom: 1px solid var(--line); }
   .control-main { padding: 22px 18px; }
   .section-heading { align-items: flex-start; flex-direction: column; }
-  .claim-form { grid-template-columns: 1fr 120px; }
+  .claim-form { grid-template-columns: 1fr 1fr; }
   .claim-form .button-primary { grid-column: 1 / -1; }
   .orders-head { align-items: flex-start; flex-direction: column; }
   .material-grid { grid-template-columns: 1fr; }
