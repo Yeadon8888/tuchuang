@@ -14,7 +14,7 @@
     <div class="auth-box">
       <div class="auth-logo" aria-hidden="true">IMG</div>
       <h2>Yeadon 图床</h2>
-      <p>输入你收到的访问码，就可以上传图片或视频并生成临时链接。</p>
+      <p>输入你收到的访问码，就可以上传图片或视频并生成分享链接。</p>
       <form id="auth-form">
         <input class="sr-only" type="text" autocomplete="username" value="friend" aria-hidden="true" tabindex="-1" />
         <input id="auth-input" type="password" placeholder="输入密码" maxlength="20" autocomplete="current-password" />
@@ -29,7 +29,7 @@
     <header>
       <div>
         <div class="logo">Yeadon 图床</div>
-        <p class="header-subtitle">拖拽、粘贴或选择图片/视频，链接保留 7 天。</p>
+        <p class="header-subtitle">拖拽、粘贴或选择图片/视频，可选短期或长期保存。</p>
       </div>
       <div class="header-actions">
         <a class="logout omni-link" href="omni-order/">多平台接单台</a>
@@ -45,6 +45,22 @@
           <h2 id="flow-import-title">Google Flow 视频转存</h2>
           <p>粘贴公开的 Labs / Flow 分享链接，视频会由 Worker 直接保存到 R2。</p>
         </div>
+        <fieldset class="storage-options" aria-label="Flow 视频保存时间">
+          <label class="storage-option">
+            <input type="radio" name="flow-storage-policy" value="temporary" checked />
+            <span>
+              <strong>短期保存</strong>
+              <small>7 天后自动清理</small>
+            </span>
+          </label>
+          <label class="storage-option">
+            <input type="radio" name="flow-storage-policy" value="permanent" />
+            <span>
+              <strong>长期保存</strong>
+              <small>不会被自动清理</small>
+            </span>
+          </label>
+        </fieldset>
         <form id="flow-import-form" class="flow-import-form">
           <label class="sr-only" for="flow-url-input">Google Flow 分享链接</label>
           <input
@@ -65,7 +81,23 @@
         <div class="drop-inner">
           <div class="drop-icon" aria-hidden="true">+</div>
           <p class="drop-text">把图片或视频放到这里</p>
-          <p class="drop-sub">支持拖拽、粘贴截图、点击选择，多文件会依次上传并在 7 天后自动清理。</p>
+          <p class="drop-sub">支持拖拽、粘贴截图、点击选择，多文件会依次上传。</p>
+          <fieldset class="storage-options compact" aria-label="上传文件保存时间">
+            <label class="storage-option">
+              <input type="radio" name="upload-storage-policy" value="temporary" checked />
+              <span>
+                <strong>短期</strong>
+                <small>7 天</small>
+              </span>
+            </label>
+            <label class="storage-option">
+              <input type="radio" name="upload-storage-policy" value="permanent" />
+              <span>
+                <strong>长期</strong>
+                <small>不自动清理</small>
+              </span>
+            </label>
+          </fieldset>
           <input id="file-input" type="file" accept="image/*,video/*" multiple class="hidden" />
           <button id="pick-btn" class="btn-primary">选择文件</button>
         </div>
@@ -93,7 +125,14 @@
             <h2 id="history-title">上传记录</h2>
             <p id="history-meta">最近上传的文件会显示在这里。</p>
           </div>
-          <button id="refresh-records-btn" class="btn-secondary">刷新记录</button>
+          <div class="history-controls">
+            <select id="record-filter" aria-label="筛选上传记录">
+              <option value="all">全部记录</option>
+              <option value="temporary">短期记录</option>
+              <option value="permanent">长期记录</option>
+            </select>
+            <button id="refresh-records-btn" class="btn-secondary">刷新记录</button>
+          </div>
         </div>
         <div id="records" class="results"></div>
       </section>

@@ -1,7 +1,9 @@
 const FALLBACK_AUTH_CODE = "1214";
 const DEFAULT_RETENTION_DAYS = 7;
 const DEFAULT_MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
-const UPLOAD_PREFIX = "uploads/";
+const TEMPORARY_PREFIX = "temporary/";
+const PERMANENT_PREFIX = "permanent/";
+const LEGACY_TEMPORARY_PREFIX = "uploads/";
 const FLOW_HOST = "labs.google";
 const DOUBAO_THREAD_PATH = /^\/thread\/[^/?#]+\/?$/i;
 const MAX_DOUBAO_HTML_BYTES = 4 * 1024 * 1024;
@@ -46,6 +48,7 @@ export default {
         ok: true,
         service: "tuchuang-api",
         retentionDays: getRetentionDays(env),
+        storagePolicies: ["temporary", "permanent"],
         features: ["image-upload", "video-upload", "flow-import", "doubao-html-proxy", "order-api-gateway", "records", "auto-cleanup"],
       });
     }
@@ -271,7 +274,9 @@ async function uploadFile(request, env, url) {
   }
 
   const originalName = sanitizeName(file.name || (kind === "video" ? "video" : "image"));
-  const key = buildObjectKey(originalName, contentType);
+  const storagePolicy = getStoragePolicy(formData.get("storagePolicy"));
+  const key = buildObjectKey(originalName, contentType, storagePolicy);
+  const uploadedAt = new Date().toISOString();
   const body = await file.arrayBuffer();
 
   await env.IMAGES.put(key, body, {
@@ -279,16 +284,17 @@ async function uploadFile(request, env, url) {
     customMetadata: {
       originalName,
       kind,
-      uploadedAt: new Date().toISOString(),
+      uploadedAt,
+      storagePolicy,
     },
   });
 
   const item = buildFileItem(url.origin, {
     key,
     size: file.size,
-    uploaded: new Date(),
+    uploaded: new Date(uploadedAt),
     contentType,
-    customMetadata: { originalName, kind },
+    customMetadata: { originalName, kind, uploadedAt, storagePolicy },
   }, getRetentionDays(env));
 
   return json(item);
@@ -347,7 +353,8 @@ async function importFlowVideo(request, env, url) {
   }
 
   const originalName = `flow-${videoId}.mp4`;
-  const key = buildObjectKey(originalName, contentType);
+  const storagePolicy = getStoragePolicy(payload?.storagePolicy);
+  const key = buildObjectKey(originalName, contentType, storagePolicy);
   const uploadedAt = new Date().toISOString();
   let stored;
 
@@ -361,6 +368,7 @@ async function importFlowVideo(request, env, url) {
         originalName,
         kind: "video",
         uploadedAt,
+        storagePolicy,
         source: "google-flow",
         sourceId: videoId,
       },
@@ -376,7 +384,7 @@ async function importFlowVideo(request, env, url) {
   const item = buildFileItem(url.origin, {
     ...stored,
     contentType,
-    customMetadata: { originalName, kind: "video", uploadedAt },
+    customMetadata: { originalName, kind: "video", uploadedAt, storagePolicy },
   }, getRetentionDays(env));
 
   return json({ ...item, sourceUrl });
@@ -388,7 +396,8 @@ async function listFiles(request, env, url) {
   }
 
   const limit = Math.min(Number.parseInt(url.searchParams.get("limit") || "60", 10) || 60, 100);
-  const listed = await env.IMAGES.list({ prefix: UPLOAD_PREFIX, limit: 1000 });
+  const policy = getListPolicy(url.searchParams.get("storagePolicy"));
+  const listed = await listRecordObjects(env, policy);
   const sorted = listed.objects
     .sort((a, b) => getObjectTime(b).getTime() - getObjectTime(a).getTime())
     .slice(0, limit);
@@ -404,6 +413,7 @@ async function listFiles(request, env, url) {
 
   return json({
     files,
+    storagePolicy: policy,
     retentionDays: getRetentionDays(env),
     truncated: listed.truncated,
   });
@@ -480,43 +490,37 @@ async function handleFile(request, env, url) {
 async function cleanupExpiredObjects(env, options = {}) {
   const retentionMs = getRetentionDays(env) * 24 * 60 * 60 * 1000;
   const cutoff = Date.now() - retentionMs;
-  let cursor;
   let scanned = 0;
   let deleted = 0;
   const deletedKeys = [];
+  const pages = await listTemporaryCleanupObjects(env);
 
-  do {
-    const page = await env.IMAGES.list({ cursor, limit: 1000 });
-    scanned += page.objects.length;
+  for (const object of pages.objects) {
+    scanned += 1;
+    if (getObjectTime(object).getTime() >= cutoff) continue;
 
-    const expiredKeys = page.objects
-      .filter((object) => getObjectTime(object).getTime() < cutoff)
-      .map((object) => object.key);
-
-    for (const key of expiredKeys) {
-      if (!options.dryRun) {
-        await env.IMAGES.delete(key);
-      }
-      deleted += 1;
-      if (deletedKeys.length < 100) deletedKeys.push(key);
+    if (!options.dryRun) {
+      await env.IMAGES.delete(object.key);
     }
-
-    cursor = page.truncated ? page.cursor : undefined;
-  } while (cursor);
+    deleted += 1;
+    if (deletedKeys.length < 100) deletedKeys.push(object.key);
+  }
 
   return {
     ok: true,
     dryRun: Boolean(options.dryRun),
     retentionDays: getRetentionDays(env),
+    cleanedPolicies: ["temporary"],
     scanned,
     deleted,
     deletedKeys,
   };
 }
 
-function buildObjectKey(originalName, contentType) {
+function buildObjectKey(originalName, contentType, storagePolicy) {
   const extension = getExtension(originalName, contentType);
-  return `${UPLOAD_PREFIX}${Date.now()}-${crypto.randomUUID().slice(0, 8)}.${extension}`;
+  const prefix = storagePolicy === "permanent" ? PERMANENT_PREFIX : TEMPORARY_PREFIX;
+  return `${prefix}${Date.now()}-${crypto.randomUUID().slice(0, 8)}.${extension}`;
 }
 
 function buildFileItem(origin, object, retentionDays) {
@@ -524,16 +528,21 @@ function buildFileItem(origin, object, retentionDays) {
   const kind = object.customMetadata?.kind || getFileKind(contentType) || "file";
   const name = object.customMetadata?.originalName || object.key.split("/").pop();
   const uploadedAt = getObjectTime(object).toISOString();
+  const storagePolicy = getObjectStoragePolicy(object);
   const url = `${origin}/file/${encodeURIComponent(object.key)}`;
+  const expiresAt = storagePolicy === "permanent"
+    ? null
+    : new Date(new Date(uploadedAt).getTime() + retentionDays * 24 * 60 * 60 * 1000).toISOString();
 
   return {
     key: object.key,
     name,
     kind,
+    storagePolicy,
     contentType,
     size: object.size || 0,
     uploadedAt,
-    expiresAt: new Date(new Date(uploadedAt).getTime() + retentionDays * 24 * 60 * 60 * 1000).toISOString(),
+    expiresAt,
     url,
     markdown: kind === "image" ? `![](${url})` : `[${name}](${url})`,
     html: kind === "image"
@@ -545,7 +554,77 @@ function buildFileItem(origin, object, retentionDays) {
 function getObjectTime(object) {
   const fromKey = object.key.match(/(?:^|\/)(\d{13})-/)?.[1];
   if (fromKey) return new Date(Number(fromKey));
+  if (object.customMetadata?.uploadedAt) return new Date(object.customMetadata.uploadedAt);
   return object.uploaded ? new Date(object.uploaded) : new Date(0);
+}
+
+async function listRecordObjects(env, policy) {
+  const prefixes = policy === "permanent"
+    ? [PERMANENT_PREFIX]
+    : policy === "temporary"
+      ? [TEMPORARY_PREFIX, LEGACY_TEMPORARY_PREFIX]
+      : [TEMPORARY_PREFIX, PERMANENT_PREFIX, LEGACY_TEMPORARY_PREFIX];
+  const pages = await Promise.all(prefixes.map((prefix) => listObjectsByPrefix(env, prefix)));
+  const rootObjects = policy === "permanent"
+    ? []
+    : (await listLegacyRootTimestampObjects(env)).objects;
+  return {
+    objects: [...pages.flatMap((page) => page.objects), ...rootObjects],
+    truncated: pages.some((page) => page.truncated),
+  };
+}
+
+async function listTemporaryCleanupObjects(env) {
+  const temporary = await Promise.all([
+    listObjectsByPrefix(env, TEMPORARY_PREFIX),
+    listObjectsByPrefix(env, LEGACY_TEMPORARY_PREFIX),
+  ]);
+  const legacyRoot = await listLegacyRootTimestampObjects(env);
+  return {
+    objects: [...temporary.flatMap((page) => page.objects), ...legacyRoot.objects],
+    truncated: temporary.some((page) => page.truncated) || legacyRoot.truncated,
+  };
+}
+
+async function listObjectsByPrefix(env, prefix) {
+  let cursor;
+  const objects = [];
+  let truncated = false;
+  do {
+    const page = await env.IMAGES.list({ prefix, cursor, limit: 1000 });
+    objects.push(...page.objects);
+    truncated = truncated || page.truncated;
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return { objects, truncated };
+}
+
+async function listLegacyRootTimestampObjects(env) {
+  let cursor;
+  const objects = [];
+  let truncated = false;
+  do {
+    const page = await env.IMAGES.list({ cursor, limit: 1000 });
+    objects.push(...page.objects.filter((object) => /^\d{13}-/.test(object.key)));
+    truncated = truncated || page.truncated;
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+  return { objects, truncated };
+}
+
+function getObjectStoragePolicy(object) {
+  const policy = object.customMetadata?.storagePolicy;
+  if (policy === "permanent" || object.key.startsWith(PERMANENT_PREFIX)) return "permanent";
+  return "temporary";
+}
+
+function getStoragePolicy(value) {
+  return value === "permanent" ? "permanent" : "temporary";
+}
+
+function getListPolicy(value) {
+  if (value === "temporary" || value === "permanent") return value;
+  return "all";
 }
 
 function getFileKind(contentType) {

@@ -20,6 +20,7 @@ const batchActions = document.getElementById("batch-actions");
 const copyAllBtn = document.getElementById("copy-all-btn");
 const clearResultsBtn = document.getElementById("clear-results-btn");
 const refreshRecordsBtn = document.getElementById("refresh-records-btn");
+const recordFilter = document.getElementById("record-filter");
 const flowImportForm = document.getElementById("flow-import-form");
 const flowUrlInput = document.getElementById("flow-url-input");
 const flowImportBtn = document.getElementById("flow-import-btn");
@@ -31,6 +32,7 @@ let apiFeatures = {
   flowImport: true,
   records: true,
   cleanup: true,
+  storagePolicies: true,
 };
 
 function getToken() {
@@ -141,6 +143,7 @@ clearResultsBtn.addEventListener("click", () => {
 });
 
 refreshRecordsBtn.addEventListener("click", () => loadRecords());
+recordFilter.addEventListener("change", () => loadRecords());
 
 flowImportForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -149,7 +152,8 @@ flowImportForm.addEventListener("submit", async (event) => {
 
   flowImportBtn.disabled = true;
   flowImportBtn.textContent = "正在转存...";
-  setFlowImportStatus("正在从 Google Flow 获取视频并写入 R2…");
+  const storagePolicy = getFlowStoragePolicy();
+  setFlowImportStatus(`正在从 Google Flow 获取视频并写入 R2（${getStoragePolicyLabel(storagePolicy)}）...`);
 
   try {
     const res = await fetch(`${API}/import/flow`, {
@@ -158,14 +162,14 @@ flowImportForm.addEventListener("submit", async (event) => {
         "Content-Type": "application/json",
         "X-Auth-Code": getToken(),
       },
-      body: JSON.stringify({ url: flowUrl }),
+      body: JSON.stringify({ url: flowUrl, storagePolicy }),
     });
     const data = await readApiResponse(res);
     uploadedUrls.unshift(data.url);
     updateBatchActions();
     results.prepend(createFileCard(data));
     flowUrlInput.value = "";
-    setFlowImportStatus("转存完成，已生成 R2 视频直链。", "success");
+    setFlowImportStatus(`转存完成，已生成${getStoragePolicyLabel(data.storagePolicy)}直链。`, "success");
     if (apiFeatures.records) loadRecords();
   } catch (error) {
     setFlowImportStatus(error.message, "error");
@@ -186,6 +190,7 @@ async function checkApiFeatures() {
       flowImport: features.includes("flow-import"),
       records: features.includes("records"),
       cleanup: features.includes("auto-cleanup"),
+      storagePolicies: Array.isArray(data.storagePolicies) && data.storagePolicies.includes("permanent"),
     };
     statusBanner.classList.toggle("hidden", apiFeatures.video && apiFeatures.flowImport && apiFeatures.records);
     statusBanner.textContent = apiFeatures.video && apiFeatures.flowImport && apiFeatures.records
@@ -193,7 +198,7 @@ async function checkApiFeatures() {
       : "当前 Worker 还不是最新版，部分视频转存或记录功能需要先部署新版 Worker。";
     flowImportBtn.disabled = !apiFeatures.flowImport;
   } catch {
-    apiFeatures = { video: true, flowImport: true, records: false, cleanup: true };
+    apiFeatures = { video: true, flowImport: true, records: false, cleanup: true, storagePolicies: true };
     statusBanner.classList.add("hidden");
   }
 
@@ -212,6 +217,7 @@ function setFlowImportStatus(message, state = "") {
 async function uploadFile(file) {
   const form = new FormData();
   form.append("file", file, file.name || defaultFileName(file));
+  form.append("storagePolicy", getUploadStoragePolicy());
 
   const res = await fetch(`${API}/upload`, {
     method: "POST",
@@ -266,22 +272,31 @@ async function loadRecords() {
   historyMeta.textContent = "正在读取上传记录...";
 
   try {
-    const res = await fetch(`${API}/files?limit=60`, {
+    const params = new URLSearchParams({
+      limit: "60",
+      storagePolicy: recordFilter.value,
+    });
+    const res = await fetch(`${API}/files?${params}`, {
       headers: { "X-Auth-Code": getToken() },
     });
     const data = await readApiResponse(res);
-    renderRecords(data.files || [], data.retentionDays || 7);
+    renderRecords(data.files || [], data.retentionDays || 7, data.storagePolicy || recordFilter.value);
   } catch (error) {
     historyMeta.textContent = error.message;
     records.textContent = "";
   }
 }
 
-function renderRecords(files, retentionDays) {
+function renderRecords(files, retentionDays, storagePolicy) {
   records.textContent = "";
+  const scopeText = {
+    all: "全部",
+    temporary: "短期",
+    permanent: "长期",
+  }[storagePolicy] || "全部";
   historyMeta.textContent = files.length
-    ? `显示最近 ${files.length} 个文件，R2 内 ${retentionDays} 天后自动清理。`
-    : `暂无记录。上传后的文件会在 R2 内保留 ${retentionDays} 天。`;
+    ? `显示最近 ${files.length} 个${scopeText}文件；短期文件 ${retentionDays} 天后清理，长期文件永久保留。`
+    : `暂无${scopeText}记录。短期文件保留 ${retentionDays} 天，长期文件不会自动清理。`;
 
   files.forEach((file) => {
     records.appendChild(createFileCard(file, { isRecord: true }));
@@ -428,11 +443,25 @@ function buildHtml(file) {
 
 function buildMeta(file) {
   const parts = [];
+  parts.push(file.storagePolicy === "permanent" ? "长期保存" : "短期保存");
   if (file.contentType) parts.push(file.contentType);
   if (file.size) parts.push(formatBytes(file.size));
   if (file.uploadedAt) parts.push(`上传 ${formatDate(file.uploadedAt)}`);
   if (file.expiresAt) parts.push(`清理 ${formatDate(file.expiresAt)}`);
+  else parts.push("不自动清理");
   return parts.join(" · ");
+}
+
+function getUploadStoragePolicy() {
+  return document.querySelector('input[name="upload-storage-policy"]:checked')?.value || "temporary";
+}
+
+function getFlowStoragePolicy() {
+  return document.querySelector('input[name="flow-storage-policy"]:checked')?.value || "temporary";
+}
+
+function getStoragePolicyLabel(policy) {
+  return policy === "permanent" ? "长期保存" : "短期保存";
 }
 
 function formatBytes(bytes) {
