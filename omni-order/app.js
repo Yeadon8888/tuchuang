@@ -201,20 +201,34 @@ async function pollClaimBatch(jobId, targeted = false) {
 }
 
 async function recoverOrders(silent = false) {
+  const candidates = activeOrders().map(({ recordId, lockId }) => ({ recordId, lockId }));
   if (!state.assignee) {
     if (!silent) setDeck("没有接单人信息，无法恢复订单。", "error");
     return;
   }
   if (!silent) setDeck("正在按接单人扫描飞书中的活动订单…", "warn");
   try {
-    const data = await api("/api/order/recover-by-assignee", { assignee: state.assignee, limit: MAX_ACTIVE_ORDERS }, 60000);
-    if (!data.ok) throw new Error(data.error || "恢复失败");
-    mergeRecoveredOrders(data.orders || [], true);
+    const [assigneeResult, localResult] = await Promise.allSettled([
+      api("/api/order/recover-by-assignee", { assignee: state.assignee, limit: MAX_ACTIVE_ORDERS }, 60000),
+      candidates.length
+        ? api("/api/order/recover", { assignee: state.assignee, orders: candidates }, 60000)
+        : Promise.resolve({ ok: true, orders: [] }),
+    ]);
+    const assigneeData = assigneeResult.status === "fulfilled" && assigneeResult.value.ok ? assigneeResult.value : null;
+    const localData = localResult.status === "fulfilled" && localResult.value.ok ? localResult.value : null;
+    if (!assigneeData && !localData) {
+      throw new Error(assigneeResult.reason?.message || localResult.reason?.message || "恢复失败");
+    }
+    const recoveredById = new Map();
+    for (const order of [...(assigneeData?.orders || []), ...(localData?.orders || [])]) {
+      if (order.recordId) recoveredById.set(order.recordId, order);
+    }
+    mergeRecoveredOrders([...recoveredById.values()], Boolean(localData));
     clearPendingClaim();
     saveState();
     render();
     startPendingPollers();
-    if (!silent) setDeck(`恢复完成：${data.orders?.length || 0} 个有效订单。`, "success");
+    if (!silent) setDeck(`恢复完成：${recoveredById.size} 个有效订单。`, "success");
   } catch (error) {
     if (!silent) setDeck(error.message || "恢复订单失败", "error");
   }

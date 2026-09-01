@@ -55,6 +55,7 @@ test("batch claims use the asynchronous job API and persist recovery state befor
 test("recovery can rebuild cards by assignee when browser lock data is missing", () => {
   const body = functionBody("recoverOrders");
   assert.match(body, /\/api\/order\/recover-by-assignee/);
+  assert.match(body, /api\("\/api\/order\/recover"/);
   assert.match(body, /mergeRecoveredOrders/);
 });
 
