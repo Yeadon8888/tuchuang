@@ -52,7 +52,7 @@ test("streams a public Flow MP4 into R2 and returns its file URL", async () => {
 
   assert.equal(response.status, 200);
   const result = await response.json();
-  assert.match(result.url, /^https:\/\/api\.example\/file\/uploads%2F/);
+  assert.match(result.url, /^https:\/\/api\.example\/file\/temporary%2F/);
   assert.equal(result.kind, "video");
   assert.equal(result.size, video.byteLength);
   assert.equal(env.puts.length, 1);

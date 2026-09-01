@@ -44,3 +44,16 @@ test("claim requests can include selected pending-view row numbers", () => {
   assert.deepEqual(parse("2, 4, 8-10", 100), [2, 4, 8, 9, 10]);
   assert.throws(() => parse("10-8", 100), /范围无效/);
 });
+
+test("batch claims use the asynchronous job API and persist recovery state before polling", () => {
+  const body = functionBody("claimBatch");
+  assert.match(body, /\/api\/order\/claim-batch\/start/);
+  assert.match(body, /claimJobId/);
+  assert.match(source, /function pollClaimBatch\(/);
+});
+
+test("recovery can rebuild cards by assignee when browser lock data is missing", () => {
+  const body = functionBody("recoverOrders");
+  assert.match(body, /\/api\/order\/recover-by-assignee/);
+  assert.match(body, /mergeRecoveredOrders/);
+});

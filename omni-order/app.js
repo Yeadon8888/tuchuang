@@ -65,7 +65,17 @@ function bootstrap() {
   bindEvents();
   render();
   checkHealth();
-  if (state.assignee && activeOrders().length) recoverOrders(true);
+  if (state.claimJobId) {
+    claimBusy = true;
+    pollClaimBatch(state.claimJobId, Boolean(state.claimRowNumbers.length))
+      .catch(() => recoverOrders(true))
+      .finally(() => {
+        claimBusy = false;
+        renderControls();
+      });
+  } else if (state.assignee) {
+    recoverOrders(true);
+  }
 }
 
 function bindEvents() {
@@ -139,68 +149,68 @@ async function claimBatch(event) {
   }
   state.assignee = assignee;
   if (!targeted) state.quantity = count;
+  state.claimRequestId = createRequestId();
+  state.claimCount = count;
+  state.claimRowNumbers = rowNumbers;
+  state.claimJobId = "";
+  saveState();
   claimBusy = true;
   setDeck(targeted ? `正在领取待接单视图第 ${rowNumbers.join("、")} 行…` : `正在从公共任务池领取 ${count} 个订单…`, "warn");
   renderControls();
   try {
-    const data = await api("/api/order/claim-batch", { assignee, count, ...(targeted ? { rowNumbers } : {}) }, 120000);
-    if (!data.ok || !Array.isArray(data.orders) || !data.orders.length) throw new Error(data.error || "暂无待接单任务");
-    const known = new Set(state.orders.map((order) => order.recordId));
-    const added = data.orders
-      .filter((order) => order.recordId && order.lockId && !known.has(order.recordId))
-      .map((order) => normalizeOrder({ ...order, state: "claimed", message: "接单成功，等待制作", createdAt: Date.now() }));
-    state.orders.push(...added);
+    const data = await api("/api/order/claim-batch/start", {
+      assignee,
+      count,
+      clientRequestId: state.claimRequestId,
+      ...(targeted ? { rowNumbers } : {}),
+    }, 15000);
+    if (!data.accepted || !data.jobId) throw new Error(data.error || "批量接单任务创建失败");
+    state.claimJobId = data.jobId;
     saveState();
-    render();
-    if (targeted) els.rowNumbers.value = "";
-    const suffix = data.partial ? `；其余未领取：${data.error || "任务不足"}` : "";
-    setDeck(`${targeted ? "指定行号" : "批量"}成功领取 ${added.length} 单${suffix}`, data.partial ? "warn" : "success");
-    showToast(`已加入 ${added.length} 张制作卡片`);
+    await pollClaimBatch(data.jobId, targeted);
   } catch (error) {
-    setDeck(error.message || "批量接单失败", "error");
+    setDeck(`${error.message || "批量接单失败"}；正在按接单人检查是否已成功领取…`, "warn");
+    await delay(800);
+    await recoverOrders(true);
   } finally {
     claimBusy = false;
     renderControls();
   }
 }
 
+async function pollClaimBatch(jobId, targeted = false) {
+  for (let attempt = 0; attempt < 360; attempt += 1) {
+    const data = await api("/api/order/claim-batch/status", { jobId }, 15000);
+    if (data.status === "processing") {
+      setDeck(`后台正在接单：已确认 ${data.claimed || 0}/${data.requested || state.claimCount || 0} 单…`, "warn");
+      await delay(1000);
+      continue;
+    }
+    if (data.status === "failed") throw new Error(data.error || data.message || "批量接单失败");
+    const added = mergeRecoveredOrders(data.orders || [], false);
+    clearPendingClaim();
+    if (targeted) els.rowNumbers.value = "";
+    saveState();
+    render();
+    const suffix = data.partial ? `；其余未领取：${data.error || "任务不足"}` : "";
+    setDeck(`${targeted ? "指定行号" : "批量"}成功领取 ${data.claimed || added} 单${suffix}`, data.partial ? "warn" : "success");
+    showToast(`已加入 ${added} 张制作卡片`);
+    return;
+  }
+  throw new Error("后台接单仍在进行，可稍后点击“校验并恢复”");
+}
+
 async function recoverOrders(silent = false) {
-  const candidates = activeOrders().map(({ recordId, lockId }) => ({ recordId, lockId }));
   if (!state.assignee) {
     if (!silent) setDeck("没有接单人信息，无法恢复订单。", "error");
     return;
   }
-  if (!candidates.length) {
-    if (!silent) setDeck("当前没有需要恢复的活动订单。", "warn");
-    return;
-  }
-  if (!silent) setDeck(`正在校验 ${candidates.length} 个订单锁…`, "warn");
+  if (!silent) setDeck("正在按接单人扫描飞书中的活动订单…", "warn");
   try {
-    const data = await api("/api/order/recover", { assignee: state.assignee, orders: candidates }, 60000);
+    const data = await api("/api/order/recover-by-assignee", { assignee: state.assignee, limit: MAX_ACTIVE_ORDERS }, 60000);
     if (!data.ok) throw new Error(data.error || "恢复失败");
-    const recoveredById = new Map((data.orders || []).map((order) => [order.recordId, order]));
-    const missingById = new Map((data.missing || []).map((order) => [order.recordId, order]));
-    state.orders = state.orders.map((local) => {
-      if (["completed", "lost"].includes(local.state)) return local;
-      const recovered = recoveredById.get(local.recordId);
-      if (recovered) {
-        const next = normalizeOrder({
-          ...local,
-          ...recovered,
-          platform: recovered.platform || local.platform || "",
-          shareUrl: local.shareUrl || recovered.shareUrl || recovered.flowShareUrl || "",
-          resultUrl: recovered.videoUrl || local.resultUrl || "",
-          message: recovered.message || "订单已恢复",
-        });
-        if (recovered.state === "claimed" && local.state === "processing") {
-          next.state = "error";
-          next.jobId = "";
-          next.message = "后台任务已结束或服务重启，可使用原链接重新提交";
-        }
-        return next;
-      }
-      return normalizeOrder({ ...local, state: "lost", jobId: "", message: missingById.get(local.recordId)?.reason || "订单锁已经失效" });
-    });
+    mergeRecoveredOrders(data.orders || [], true);
+    clearPendingClaim();
     saveState();
     render();
     startPendingPollers();
@@ -208,6 +218,44 @@ async function recoverOrders(silent = false) {
   } catch (error) {
     if (!silent) setDeck(error.message || "恢复订单失败", "error");
   }
+}
+
+function mergeRecoveredOrders(recoveredOrders, markMissing) {
+  const recoveredById = new Map(recoveredOrders.map((order) => [order.recordId, order]));
+  const existingIds = new Set(state.orders.map((order) => order.recordId));
+  state.orders = state.orders.map((local) => {
+    if (["completed", "lost"].includes(local.state)) return local;
+    const recovered = recoveredById.get(local.recordId);
+    if (!recovered) {
+      return markMissing ? normalizeOrder({ ...local, state: "lost", jobId: "", message: "订单锁已经失效或已被释放" }) : local;
+    }
+    const next = normalizeOrder({
+      ...local,
+      ...recovered,
+      platform: recovered.platform || local.platform || "",
+      shareUrl: local.shareUrl || recovered.shareUrl || recovered.flowShareUrl || "",
+      resultUrl: recovered.videoUrl || local.resultUrl || "",
+      message: recovered.message || "订单已恢复",
+    });
+    if (recovered.state === "claimed" && local.state === "processing") {
+      next.state = "error";
+      next.jobId = "";
+      next.message = "后台任务已结束或服务重启，可使用原链接重新提交";
+    }
+    return next;
+  });
+  const added = recoveredOrders
+    .filter((order) => order.recordId && order.lockId && !existingIds.has(order.recordId))
+    .map((order) => normalizeOrder({ ...order, state: order.state || "claimed", message: order.message || "已按接单人恢复", createdAt: Date.now() }));
+  state.orders.push(...added);
+  return added.length;
+}
+
+function clearPendingClaim() {
+  state.claimJobId = "";
+  state.claimRequestId = "";
+  state.claimCount = 0;
+  state.claimRowNumbers = [];
 }
 
 function handleGridInput(event) {
@@ -498,7 +546,7 @@ function renderControls() {
   els.quantity.disabled = claimBusy || batchBusy || active >= MAX_ACTIVE_ORDERS || hasRowSelection;
   els.claim.disabled = !serverOnline || claimBusy || batchBusy || active >= MAX_ACTIVE_ORDERS;
   els.claim.querySelector("span").textContent = claimBusy ? "接单中…" : (hasRowSelection ? "领取指定行" : "批量接单");
-  els.recover.disabled = batchBusy || !active;
+  els.recover.disabled = batchBusy || !state.assignee;
   els.submitAll.disabled = batchBusy || !submittable;
   els.releaseAll.disabled = batchBusy || !releasable;
   els.clearCompleted.disabled = batchBusy || !state.orders.some((order) => ["completed", "lost"].includes(order.state));
@@ -537,9 +585,15 @@ function loadState() {
     const parsed = JSON.parse(localStorage.getItem(STATE_KEY) || localStorage.getItem(LEGACY_STATE_KEY) || "{}");
     return {
       assignee: String(parsed.assignee || ""), quantity: normalizeBatchSize(parsed.quantity),
+      claimJobId: String(parsed.claimJobId || ""),
+      claimRequestId: String(parsed.claimRequestId || ""),
+      claimCount: Number(parsed.claimCount || 0),
+      claimRowNumbers: Array.isArray(parsed.claimRowNumbers) ? parsed.claimRowNumbers.map(Number).filter((value) => Number.isSafeInteger(value) && value > 0) : [],
       orders: Array.isArray(parsed.orders) ? parsed.orders.map((order) => normalizeOrder({ ...order, platform: order.platform || (legacy ? "Omni" : "") })).filter((order) => order.recordId && order.lockId) : [],
     };
-  } catch { return { assignee: "", quantity: DEFAULT_BATCH_SIZE, orders: [] }; }
+  } catch {
+    return { assignee: "", quantity: DEFAULT_BATCH_SIZE, claimJobId: "", claimRequestId: "", claimCount: 0, claimRowNumbers: [], orders: [] };
+  }
 }
 
 function saveState() {
@@ -619,6 +673,10 @@ function showToast(message, tone = "") { clearTimeout(toastTimer); els.toast.tex
 function shortId(value) { const text = String(value || ""); return text.length > 12 ? `${text.slice(0, 6)}…${text.slice(-4)}` : text; }
 function pad(value) { return String(value).padStart(2, "0"); }
 function normalizeBatchSize(value) { const size = Number(value); return BATCH_SIZE_OPTIONS.includes(size) ? size : DEFAULT_BATCH_SIZE; }
+function createRequestId() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `claim-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
 function parseRowNumbers(value) {
   const text = String(value || "").trim();
   if (!text) return [];

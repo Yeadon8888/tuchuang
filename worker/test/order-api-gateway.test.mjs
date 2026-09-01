@@ -49,3 +49,27 @@ test("rejects paths outside the order API allowlist", async () => {
   assert.equal(response.status, 404);
   assert.deepEqual(await response.json(), { error: "不支持的接单 API 路径" });
 });
+
+test("allows asynchronous batch claim and assignee recovery routes", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const captured = [];
+  globalThis.fetch = async (url) => {
+    captured.push(String(url));
+    return new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json" } });
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+
+  for (const path of [
+    "/api/order/claim-batch/start",
+    "/api/order/claim-batch/status",
+    "/api/order/recover-by-assignee",
+  ]) {
+    const response = await worker.fetch(new Request(`https://edge.example/order-api${path}`, { method: "POST", body: "{}" }), {});
+    assert.equal(response.status, 200);
+  }
+  assert.deepEqual(captured, [
+    "https://genvideo.mailab.top/api/order/claim-batch/start",
+    "https://genvideo.mailab.top/api/order/claim-batch/status",
+    "https://genvideo.mailab.top/api/order/recover-by-assignee",
+  ]);
+});
