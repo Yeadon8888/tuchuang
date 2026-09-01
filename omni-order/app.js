@@ -346,12 +346,13 @@ async function submitOrder(recordId) {
 async function resolveDoubaoFallback(shareUrl) {
   const endpoint = new URL("/resolve/doubao-thread", RESOLVER);
   endpoint.searchParams.set("url", shareUrl);
-  let response;
-  try { response = await fetch(endpoint, { cache: "no-store" }); }
-  catch { throw new Error("无法读取豆包分享页，请检查网络后重试"); }
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.fallbackApi) throw new Error(data.error || "当前网络没有读取到豆包视频数据，请稍后重试");
-  return data.fallbackApi;
+  try {
+    const response = await fetch(endpoint, { cache: "no-store" });
+    const data = await response.json().catch(() => ({}));
+    return response.ok && data.fallbackApi ? data.fallbackApi : "";
+  } catch {
+    return "";
+  }
 }
 
 async function pollOrder(recordId) {

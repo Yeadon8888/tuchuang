@@ -57,3 +57,17 @@ test("recovery can rebuild cards by assignee when browser lock data is missing",
   assert.match(body, /\/api\/order\/recover-by-assignee/);
   assert.match(body, /mergeRecoveredOrders/);
 });
+
+test("Doubao submission continues when Cloudflare cannot extract fallback_api", async () => {
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const resolveDoubaoFallback = new AsyncFunction("shareUrl", "RESOLVER", "fetch", functionBody("resolveDoubaoFallback"));
+  const result = await resolveDoubaoFallback(
+    "https://www.doubao.com/thread/xVy9XavoQmbpFO6Rw",
+    "https://resolver.test",
+    async () => new Response(JSON.stringify({ error: "当前网络没有读取到豆包视频数据，请稍后重试" }), {
+      status: 422,
+      headers: { "content-type": "application/json" },
+    }),
+  );
+  assert.equal(result, "");
+});
