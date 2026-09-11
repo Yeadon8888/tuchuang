@@ -223,7 +223,10 @@ async function recoverOrders(silent = false) {
     for (const order of [...(assigneeData?.orders || []), ...(localData?.orders || [])]) {
       if (order.recordId) recoveredById.set(order.recordId, order);
     }
-    mergeRecoveredOrders([...recoveredById.values()], Boolean(localData));
+    const definitiveMissing = new Set((localData?.missing || [])
+      .filter((item) => item && !item.retryable)
+      .map((item) => String(item.recordId || '')));
+    mergeRecoveredOrders([...recoveredById.values()], definitiveMissing);
     clearPendingClaim();
     saveState();
     render();
@@ -234,15 +237,18 @@ async function recoverOrders(silent = false) {
   }
 }
 
-function mergeRecoveredOrders(recoveredOrders, markMissing) {
+function mergeRecoveredOrders(recoveredOrders, missing = false) {
   const recoveredById = new Map(recoveredOrders.map((order) => [order.recordId, order]));
   const existingIds = new Set(state.orders.map((order) => order.recordId));
   state.orders = state.orders.map((local) => {
     if (["completed", "lost"].includes(local.state)) return local;
     const recovered = recoveredById.get(local.recordId);
-    if (!recovered) {
-      return markMissing ? normalizeOrder({ ...local, state: "lost", jobId: "", message: "订单锁已经失效或已被释放" }) : local;
+    const shouldMarkMissing = missing === true
+      || (missing instanceof Set && missing.has(local.recordId));
+    if (!recovered && shouldMarkMissing) {
+      return normalizeOrder({ ...local, state: "lost", jobId: "", message: "订单锁已经失效或已被释放" });
     }
+    if (!recovered) return local;
     const next = normalizeOrder({
       ...local,
       ...recovered,
