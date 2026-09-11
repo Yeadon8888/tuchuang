@@ -5,7 +5,7 @@ const API_ROUTES = [
 ];
 let API = API_ROUTES[0].base;
 let apiRouteLabel = API_ROUTES[0].label;
-const FLOW_PATH = /^\/fx\/tools\/flow\/shared\/video\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/?$/i;
+const FLOW_PATH = /^(?:\/fx\/tools\/flow\/shared\/video|\/shared\/video)\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/?$/i;
 const DOUBAO_PATH = /^\/thread\/[^/?#]+\/?$/i;
 const STATE_KEY = "mailab_multi_platform_workbench_v2";
 const LEGACY_STATE_KEY = "mailab_omni_batch_workbench_v1";
@@ -622,25 +622,35 @@ function saveState() {
 }
 
 async function api(path, body, timeoutMs = 30000) {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(`${API}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}), signal: controller.signal });
-    const text = await response.text();
-    let data;
-    try { data = JSON.parse(text); } catch { throw new Error(text.slice(0, 160) || `服务器返回异常 HTTP ${response.status}`); }
-    if (!response.ok) throw new Error(data.error || `后端请求失败 HTTP ${response.status}`);
-    return data;
-  } catch (error) {
-    if (error.name === "AbortError") throw new Error("请求超时，请稍后重试");
-    throw error;
-  } finally { clearTimeout(timeout); }
+  const routes = [API, ...API_ROUTES.map((route) => route.base).filter((base) => base !== API)];
+  let lastError;
+  for (const base of routes) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body || {}), signal: controller.signal });
+      const text = await response.text();
+      let data;
+      try { data = JSON.parse(text); } catch { throw new Error(text.slice(0, 160) || `服务器返回异常 HTTP ${response.status}`); }
+      if (!response.ok) {
+        const error = new Error(data.error || `后端请求失败 HTTP ${response.status}`);
+        if (response.status < 500) throw error;
+        lastError = error;
+        continue;
+      }
+      API = base;
+      return data;
+    } catch (error) {
+      lastError = error.name === "AbortError" ? new Error("请求超时，请稍后重试") : error;
+    } finally { clearTimeout(timeout); }
+  }
+  throw lastError || new Error("后端请求失败");
 }
 
 function normalizeFlowShareUrl(value) {
   try {
     const url = new URL(String(value || "").trim());
-    if (url.protocol !== "https:" || url.hostname !== "labs.google" || url.username || url.password) return "";
+    if (url.protocol !== "https:" || !["labs.google", "flow.google.com"].includes(url.hostname) || url.username || url.password) return "";
     const match = url.pathname.match(FLOW_PATH);
     return match ? `https://labs.google/fx/tools/flow/shared/video/${match[1].toLowerCase()}` : "";
   } catch { return ""; }
