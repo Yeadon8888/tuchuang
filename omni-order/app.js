@@ -155,7 +155,7 @@ async function claimBatch(event) {
   state.claimJobId = "";
   saveState();
   claimBusy = true;
-  setDeck(targeted ? `正在领取兼职表第 ${rowNumbers.join("、")} 行…` : `正在从公共任务池领取 ${count} 个订单…`, "warn");
+  setDeck(targeted ? `正在领取待接单视图第 ${rowNumbers.join("、")} 行…` : `正在从公共任务池领取 ${count} 个订单…`, "warn");
   renderControls();
   try {
     const data = await api("/api/order/claim-batch/start", {
