@@ -371,7 +371,8 @@ async function importFlowVideo(request, env, url) {
 
   const originalName = `flow-${videoId}.mp4`;
   const storagePolicy = getStoragePolicy(payload?.storagePolicy);
-  const key = buildObjectKey(originalName, contentType, storagePolicy);
+  const uploadId = getUploadId(payload?.uploadId);
+  const key = buildObjectKey(originalName, contentType, storagePolicy, uploadId);
   const uploadedAt = new Date().toISOString();
   let stored;
 

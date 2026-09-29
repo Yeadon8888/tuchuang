@@ -1,4 +1,7 @@
-const API = "https://tuchuang-api.yeadon8888.workers.dev";
+const API_CANDIDATES = [
+  "https://picturebed.yeadon.top",
+  "https://tuchuang-api.yeadon8888.workers.dev",
+];
 const AUTH_KEY = "tuchuang_auth";
 
 const authOverlay = document.getElementById("auth-overlay");
@@ -28,6 +31,7 @@ const flowImportStatus = document.getElementById("flow-import-status");
 
 const uploadedUrls = [];
 const UPLOAD_MAX_ATTEMPTS = 3;
+let activeApi = API_CANDIDATES[0];
 let apiFeatures = {
   video: true,
   flowImport: true,
@@ -157,13 +161,13 @@ flowImportForm.addEventListener("submit", async (event) => {
   setFlowImportStatus(`正在从 Google Flow 获取视频并写入 R2（${getStoragePolicyLabel(storagePolicy)}）...`);
 
   try {
-    const res = await fetch(`${API}/import/flow`, {
+    const res = await apiFetch("/import/flow", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Auth-Code": getToken(),
       },
-      body: JSON.stringify({ url: flowUrl, storagePolicy }),
+      body: JSON.stringify({ url: flowUrl, storagePolicy, uploadId: createUploadId() }),
     });
     const data = await readApiResponse(res);
     uploadedUrls.unshift(data.url);
@@ -183,7 +187,7 @@ flowImportForm.addEventListener("submit", async (event) => {
 
 async function checkApiFeatures() {
   try {
-    const res = await fetch(`${API}/healthz`);
+    const res = await apiFetch("/healthz");
     const data = await res.json();
     const features = data.features || [];
     apiFeatures = {
@@ -216,17 +220,18 @@ function setFlowImportStatus(message, state = "") {
 }
 
 async function uploadFile(file, uploadId) {
-  const form = new FormData();
-  form.append("file", file, file.name || defaultFileName(file));
-  form.append("storagePolicy", getUploadStoragePolicy());
-  form.append("uploadId", uploadId);
-
   let res;
   try {
-    res = await fetch(`${API}/upload`, {
+    res = await apiFetch("/upload", {
       method: "POST",
       headers: { "X-Auth-Code": getToken() },
-      body: form,
+      bodyFactory() {
+        const form = new FormData();
+        form.append("file", file, file.name || defaultFileName(file));
+        form.append("storagePolicy", getUploadStoragePolicy());
+        form.append("uploadId", uploadId);
+        return form;
+      },
     });
   } catch {
     const error = new Error("网络连接中断");
@@ -307,7 +312,7 @@ async function loadRecords() {
       limit: "60",
       storagePolicy: recordFilter.value,
     });
-    const res = await fetch(`${API}/files?${params}`, {
+    const res = await apiFetch(`/files?${params}`, {
       headers: { "X-Auth-Code": getToken() },
     });
     const data = await readApiResponse(res);
@@ -415,7 +420,7 @@ function loadRecordVideo(button) {
 
 async function deleteRecord(key, item) {
   try {
-    const res = await fetch(`${API}/file/${encodeURIComponent(key)}`, {
+    const res = await apiFetch(`/file/${encodeURIComponent(key)}`, {
       method: "DELETE",
       headers: { "X-Auth-Code": getToken() },
     });
@@ -528,6 +533,27 @@ function getStoragePolicyLabel(policy) {
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function apiFetch(path, options = {}) {
+  const { bodyFactory, ...fetchOptions } = options;
+  const candidates = [activeApi, ...API_CANDIDATES.filter((base) => base !== activeApi)];
+  let lastError;
+
+  for (const base of candidates) {
+    try {
+      const requestOptions = bodyFactory
+        ? { ...fetchOptions, body: bodyFactory() }
+        : fetchOptions;
+      const response = await fetch(`${base}${path}`, requestOptions);
+      activeApi = base;
+      return response;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error("无法连接图床服务");
 }
 
 function createUploadId() {

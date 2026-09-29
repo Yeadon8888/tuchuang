@@ -47,6 +47,7 @@ test("streams a public Flow MP4 into R2 and returns its file URL", async () => {
     },
     body: JSON.stringify({
       url: `https://labs.google/fx/tools/flow/shared/video/${FLOW_ID}`,
+      uploadId: "1790666000000-f10a0001",
     }),
   }), env);
 
@@ -55,6 +56,7 @@ test("streams a public Flow MP4 into R2 and returns its file URL", async () => {
   assert.match(result.url, /^https:\/\/api\.example\/file\/temporary%2F/);
   assert.equal(result.kind, "video");
   assert.equal(result.storagePolicy, "temporary");
+  assert.equal(result.key, "temporary/1790666000000-f10a0001.mp4");
   assert.equal(result.size, video.byteLength);
   assert.equal(env.puts.length, 1);
   assert.deepEqual([...env.puts[0].body], [...video]);

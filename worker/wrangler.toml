@@ -2,6 +2,10 @@ name = "tuchuang-api"
 main = "src/index.js"
 compatibility_date = "2026-08-27"
 
+routes = [
+  { pattern = "picturebed.yeadon.top", custom_domain = true }
+]
+
 [vars]
 RETENTION_DAYS = "7"
 MAX_UPLOAD_BYTES = "104857600"
