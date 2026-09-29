@@ -27,6 +27,7 @@ const flowImportBtn = document.getElementById("flow-import-btn");
 const flowImportStatus = document.getElementById("flow-import-status");
 
 const uploadedUrls = [];
+const UPLOAD_MAX_ATTEMPTS = 3;
 let apiFeatures = {
   video: true,
   flowImport: true,
@@ -214,18 +215,46 @@ function setFlowImportStatus(message, state = "") {
   flowImportStatus.className = `flow-import-status${state ? ` ${state}` : ""}`;
 }
 
-async function uploadFile(file) {
+async function uploadFile(file, uploadId) {
   const form = new FormData();
   form.append("file", file, file.name || defaultFileName(file));
   form.append("storagePolicy", getUploadStoragePolicy());
+  form.append("uploadId", uploadId);
 
-  const res = await fetch(`${API}/upload`, {
-    method: "POST",
-    headers: { "X-Auth-Code": getToken() },
-    body: form,
-  });
+  let res;
+  try {
+    res = await fetch(`${API}/upload`, {
+      method: "POST",
+      headers: { "X-Auth-Code": getToken() },
+      body: form,
+    });
+  } catch {
+    const error = new Error("网络连接中断");
+    error.retryable = true;
+    throw error;
+  }
 
   return readApiResponse(res);
+}
+
+async function uploadFileWithRetry(file, onRetry) {
+  const uploadId = createUploadId();
+  let lastError;
+  for (let attempt = 1; attempt <= UPLOAD_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await uploadFile(file, uploadId);
+    } catch (error) {
+      lastError = error;
+      if (!error.retryable || attempt === UPLOAD_MAX_ATTEMPTS) break;
+      onRetry(attempt + 1, UPLOAD_MAX_ATTEMPTS);
+      await wait(attempt * 800);
+    }
+  }
+
+  if (lastError?.retryable) {
+    lastError.message = `${lastError.message}，已自动重试 ${UPLOAD_MAX_ATTEMPTS - 1} 次`;
+  }
+  throw lastError;
 }
 
 async function handleFiles(fileList) {
@@ -251,7 +280,9 @@ async function handleFiles(fileList) {
     progressBar.style.width = `${Math.round((i / files.length) * 100)}%`;
 
     try {
-      const data = await uploadFile(file);
+      const data = await uploadFileWithRetry(file, (attempt, maxAttempts) => {
+        progressText.textContent = `连接中断，正在重试 ${attempt} / ${maxAttempts}：${file.name || "未命名文件"}`;
+      });
       addResult(file, data);
       successCount += 1;
     } catch (error) {
@@ -319,7 +350,7 @@ function createFileCard(file, options = {}) {
   const item = document.createElement("div");
   item.className = "result-item";
   item.innerHTML = `
-    ${renderPreview(file)}
+    ${renderPreview(file, { deferVideo: options.isRecord })}
     <div class="result-info">
       <div class="result-name">${escapeHtml(file.name || "未命名文件")}</div>
       <a class="result-url" href="${escapeAttribute(file.url)}" target="_blank" rel="noreferrer">${escapeHtml(file.url)}</a>
@@ -338,6 +369,11 @@ function createFileCard(file, options = {}) {
     button.addEventListener("click", () => copyText(button.dataset.copy, button, label));
   });
 
+  const videoLoadBtn = item.querySelector("[data-video-src]");
+  if (videoLoadBtn) {
+    videoLoadBtn.addEventListener("click", () => loadRecordVideo(videoLoadBtn));
+  }
+
   const deleteBtn = item.querySelector("[data-delete]");
   if (deleteBtn) {
     deleteBtn.addEventListener("click", () => deleteRecord(file.key, item));
@@ -346,12 +382,35 @@ function createFileCard(file, options = {}) {
   return item;
 }
 
-function renderPreview(file) {
+function renderPreview(file, options = {}) {
   const url = file.previewUrl || file.url;
   if (isVideo(file)) {
-    return `<video class="result-thumb" src="${escapeAttribute(url)}" muted playsinline controls></video>`;
+    if (options.deferVideo) {
+      return `
+        <button
+          type="button"
+          class="result-thumb video-load-btn"
+          data-video-src="${escapeAttribute(url)}"
+          aria-label="播放 ${escapeAttribute(file.name || "视频")}"
+          title="点击播放"
+        ><span aria-hidden="true">&#9654;</span></button>
+      `;
+    }
+    return `<video class="result-thumb" src="${escapeAttribute(url)}" preload="metadata" muted playsinline controls></video>`;
   }
   return `<img class="result-thumb" src="${escapeAttribute(url)}" alt="" />`;
+}
+
+function loadRecordVideo(button) {
+  const video = document.createElement("video");
+  video.className = "result-thumb";
+  video.src = button.dataset.videoSrc;
+  video.preload = "metadata";
+  video.muted = true;
+  video.playsInline = true;
+  video.controls = true;
+  button.replaceWith(video);
+  video.play().catch(() => {});
 }
 
 async function deleteRecord(key, item) {
@@ -396,7 +455,10 @@ async function readApiResponse(res) {
   }
 
   if (!res.ok) {
-    throw new Error(data.error || "请求失败，请稍后重试");
+    const error = new Error(data.error || "请求失败，请稍后重试");
+    error.status = res.status;
+    error.retryable = Boolean(data.retryable) || res.status === 429 || res.status >= 500;
+    throw error;
   }
 
   return data;
@@ -462,6 +524,16 @@ function getFlowStoragePolicy() {
 
 function getStoragePolicyLabel(policy) {
   return policy === "permanent" ? "长期保存" : "短期保存";
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function createUploadId() {
+  const randomPart = globalThis.crypto?.randomUUID?.().slice(0, 8)
+    || Math.random().toString(16).slice(2, 10).padEnd(8, "0");
+  return `${Date.now()}-${randomPart}`;
 }
 
 function formatBytes(bytes) {

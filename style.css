@@ -489,6 +489,26 @@ main {
   background: #e2ddd2;
 }
 
+.video-load-btn {
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  color: #fff;
+  background: #79766e;
+  cursor: pointer;
+}
+
+.video-load-btn:hover {
+  background: var(--accent);
+}
+
+.video-load-btn span {
+  margin-left: 3px;
+  font-size: 22px;
+  line-height: 1;
+}
+
 .result-info {
   min-width: 0;
 }

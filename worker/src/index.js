@@ -1,6 +1,7 @@
 const FALLBACK_AUTH_CODE = "1214";
 const DEFAULT_RETENTION_DAYS = 7;
 const DEFAULT_MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+const R2_WRITE_ATTEMPTS = 2;
 const TEMPORARY_PREFIX = "temporary/";
 const PERMANENT_PREFIX = "permanent/";
 const LEGACY_TEMPORARY_PREFIX = "uploads/";
@@ -278,19 +279,32 @@ async function uploadFile(request, env, url) {
 
   const originalName = sanitizeName(file.name || (kind === "video" ? "video" : "image"));
   const storagePolicy = getStoragePolicy(formData.get("storagePolicy"));
-  const key = buildObjectKey(originalName, contentType, storagePolicy);
+  const uploadId = getUploadId(formData.get("uploadId"));
+  const key = buildObjectKey(originalName, contentType, storagePolicy, uploadId);
   const uploadedAt = new Date().toISOString();
   const body = await file.arrayBuffer();
 
-  await env.IMAGES.put(key, body, {
-    httpMetadata: { contentType },
-    customMetadata: {
-      originalName,
-      kind,
-      uploadedAt,
-      storagePolicy,
-    },
-  });
+  try {
+    await putObjectWithRetry(env.IMAGES, key, body, {
+      httpMetadata: { contentType },
+      customMetadata: {
+        originalName,
+        kind,
+        uploadedAt,
+        storagePolicy,
+      },
+    });
+  } catch (error) {
+    console.error("R2 upload failed", {
+      key,
+      size: file.size,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return json({
+      error: "R2 存储暂时不可用，已自动重试，请稍后再试",
+      retryable: true,
+    }, 503);
+  }
 
   const item = buildFileItem(url.origin, {
     key,
@@ -520,10 +534,25 @@ async function cleanupExpiredObjects(env, options = {}) {
   };
 }
 
-function buildObjectKey(originalName, contentType, storagePolicy) {
+function buildObjectKey(originalName, contentType, storagePolicy, uploadId = "") {
   const extension = getExtension(originalName, contentType);
   const prefix = storagePolicy === "permanent" ? PERMANENT_PREFIX : TEMPORARY_PREFIX;
-  return `${prefix}${Date.now()}-${crypto.randomUUID().slice(0, 8)}.${extension}`;
+  const objectId = uploadId || `${Date.now()}-${crypto.randomUUID().slice(0, 8)}`;
+  return `${prefix}${objectId}.${extension}`;
+}
+
+async function putObjectWithRetry(bucket, key, body, options) {
+  let lastError;
+  for (let attempt = 1; attempt <= R2_WRITE_ATTEMPTS; attempt += 1) {
+    try {
+      const stored = await bucket.put(key, body, options);
+      if (stored) return stored;
+      lastError = new Error("R2 did not confirm the upload");
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("R2 upload failed");
 }
 
 function buildFileItem(origin, object, retentionDays) {
@@ -623,6 +652,11 @@ function getObjectStoragePolicy(object) {
 
 function getStoragePolicy(value) {
   return value === "permanent" ? "permanent" : "temporary";
+}
+
+function getUploadId(value) {
+  const uploadId = String(value || "");
+  return /^\d{13}-[a-f0-9]{8}$/i.test(uploadId) ? uploadId.toLowerCase() : "";
 }
 
 function getListPolicy(value) {

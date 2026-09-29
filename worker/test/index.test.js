@@ -54,10 +54,62 @@ test("streams a public Flow MP4 into R2 and returns its file URL", async () => {
   const result = await response.json();
   assert.match(result.url, /^https:\/\/api\.example\/file\/temporary%2F/);
   assert.equal(result.kind, "video");
+  assert.equal(result.storagePolicy, "temporary");
   assert.equal(result.size, video.byteLength);
   assert.equal(env.puts.length, 1);
   assert.deepEqual([...env.puts[0].body], [...video]);
   assert.equal(env.puts[0].options.customMetadata.sourceId, FLOW_ID);
+});
+
+test("retries a transient R2 error when uploading a file", async () => {
+  const env = createEnv();
+  const originalPut = env.IMAGES.put;
+  let attempts = 0;
+  env.IMAGES.put = async (...args) => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("temporary R2 error");
+    return originalPut(...args);
+  };
+
+  const form = new FormData();
+  form.set("file", new File([new Uint8Array([1, 2, 3])], "clip.mp4", { type: "video/mp4" }));
+  form.set("storagePolicy", "permanent");
+  form.set("uploadId", "1790664000000-a1b2c3d4");
+  const response = await worker.fetch(new Request("https://api.example/upload", {
+    method: "POST",
+    headers: { "X-Auth-Code": "1214" },
+    body: form,
+  }), env);
+
+  assert.equal(response.status, 200);
+  assert.equal(attempts, 2);
+  const result = await response.json();
+  assert.equal(result.storagePolicy, "permanent");
+  assert.equal(result.key, "permanent/1790664000000-a1b2c3d4.mp4");
+});
+
+test("returns a retryable CORS error when R2 upload keeps failing", async () => {
+  const env = createEnv();
+  let attempts = 0;
+  env.IMAGES.put = async () => {
+    attempts += 1;
+    throw new Error("R2 unavailable");
+  };
+
+  const form = new FormData();
+  form.set("file", new File([new Uint8Array([1, 2, 3])], "clip.mp4", { type: "video/mp4" }));
+  const response = await worker.fetch(new Request("https://api.example/upload", {
+    method: "POST",
+    headers: { "X-Auth-Code": "1214" },
+    body: form,
+  }), env);
+
+  assert.equal(response.status, 503);
+  assert.equal(response.headers.get("Access-Control-Allow-Origin"), "*");
+  assert.equal(attempts, 2);
+  const result = await response.json();
+  assert.equal(result.retryable, true);
+  assert.match(result.error, /R2 存储暂时不可用/);
 });
 
 test("serves R2 video byte ranges with a 206 response", async () => {
