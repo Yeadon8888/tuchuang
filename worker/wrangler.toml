@@ -7,6 +7,10 @@ routes = [
   { pattern = "picturebed.yeadon.top", custom_domain = true }
 ]
 
+[[vpc_services]]
+binding = "ORDER_API"
+service_id = "01a0f5b0-bc81-7211-b3e7-a59032b08f98"
+
 [vars]
 RETENTION_DAYS = "7"
 MAX_UPLOAD_BYTES = "104857600"

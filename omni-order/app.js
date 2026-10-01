@@ -1,7 +1,6 @@
 const RESOLVER = "https://tuchuang-api.yeadon8888.workers.dev";
 const API_ROUTES = [
-  { base: "https://genvideo.mailab.top", label: "源站直连" },
-  { base: `${RESOLVER}/order-api`, label: "Cloudflare" },
+  { base: `${RESOLVER}/order-api`, label: "Cloudflare 私网" },
 ];
 let API = API_ROUTES[0].base;
 let apiRouteLabel = API_ROUTES[0].label;

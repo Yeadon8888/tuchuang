@@ -1,4 +1,4 @@
-const API_BASE = 'https://genvideo.mailab.top';
+const API_BASE = 'https://tuchuang-api.yeadon8888.workers.dev/order-api';
 const RESOLVER_BASE = 'https://tuchuang-api.yeadon8888.workers.dev';
 const POLL_INTERVAL_MS = 1800;
 const STAGES = ['resolving', 'downloading', 'uploading', 'completed'];

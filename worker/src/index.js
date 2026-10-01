@@ -8,7 +8,7 @@ const LEGACY_TEMPORARY_PREFIX = "uploads/";
 const FLOW_HOST = "labs.google";
 const DOUBAO_THREAD_PATH = /^\/thread\/[^/?#]+\/?$/i;
 const MAX_DOUBAO_HTML_BYTES = 4 * 1024 * 1024;
-const ORDER_API_ORIGIN = "https://genvideo.mailab.top";
+const ORDER_API_ORIGIN = "http://127.0.0.1:8787";
 const ORDER_API_PREFIX = "/order-api";
 const MAX_ORDER_API_BODY_BYTES = 1024 * 1024;
 const ORDER_API_ROUTES = new Map([
@@ -44,7 +44,7 @@ export default {
     }
 
     if (url.pathname === ORDER_API_PREFIX || url.pathname.startsWith(`${ORDER_API_PREFIX}/`)) {
-      return proxyOrderApi(request, url);
+      return proxyOrderApi(request, url, env);
     }
 
     if (request.method === "GET" && url.pathname === "/healthz") {
@@ -93,7 +93,7 @@ export default {
   },
 };
 
-async function proxyOrderApi(request, url) {
+async function proxyOrderApi(request, url, env) {
   const upstreamPath = url.pathname.slice(ORDER_API_PREFIX.length) || "/";
   if (!ORDER_API_ROUTES.has(`${request.method} ${upstreamPath}`)) {
     return json({ error: "不支持的接单 API 路径" }, 404);
@@ -123,7 +123,7 @@ async function proxyOrderApi(request, url) {
 
   let upstream;
   try {
-    upstream = await fetch(upstreamUrl, {
+    upstream = await env.ORDER_API.fetch(upstreamUrl, {
       method: request.method,
       headers,
       body,
