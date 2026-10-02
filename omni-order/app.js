@@ -365,12 +365,16 @@ async function submitOrder(recordId) {
 async function resolveDoubaoFallback(shareUrl) {
   const endpoint = new URL("/resolve/doubao-thread", RESOLVER);
   endpoint.searchParams.set("url", shareUrl);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
   try {
-    const response = await fetch(endpoint, { cache: "no-store" });
+    const response = await fetch(endpoint, { cache: "no-store", signal: controller.signal });
     const data = await response.json().catch(() => ({}));
     return response.ok && data.fallbackApi ? data.fallbackApi : "";
   } catch {
     return "";
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -414,10 +418,15 @@ async function submitAllReady() {
   batchBusy = true;
   setDeck(`正在提交 ${candidates.length} 个转存任务…`, "warn");
   renderControls();
-  await runPool(candidates, 3, (order) => submitOrder(order.recordId));
-  batchBusy = false;
-  setDeck(`${candidates.length} 个任务已提交，结果会分别显示在卡片中。`, "success");
-  renderControls();
+  try {
+    await runPool(candidates, 3, (order) => submitOrder(order.recordId));
+    setDeck(`${candidates.length} 个任务已提交，结果会分别显示在卡片中。`, "success");
+  } catch (error) {
+    setDeck(error.message || "批量提交中断，请检查卡片后重试", "error");
+  } finally {
+    batchBusy = false;
+    renderControls();
+  }
 }
 
 async function releaseOrder(recordId) {
@@ -569,7 +578,7 @@ function renderControls() {
   els.recover.disabled = batchBusy || !state.assignee;
   els.submitAll.disabled = batchBusy || !submittable;
   els.releaseAll.disabled = batchBusy || !releasable;
-  els.clearCompleted.disabled = batchBusy || !state.orders.some((order) => ["completed", "lost"].includes(order.state));
+  els.clearCompleted.disabled = !state.orders.some((order) => ["completed", "lost"].includes(order.state));
 }
 
 function detectPlatform(value) {

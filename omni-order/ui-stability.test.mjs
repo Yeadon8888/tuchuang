@@ -36,6 +36,24 @@ test("saving state does not reorder completed cards", () => {
   assert.doesNotMatch(body, /\.sort\s*\(/);
 });
 
+test("completed cards can be cleared while a batch is still submitting", () => {
+  const els = Object.fromEntries(["assignee", "rowNumbers", "quantity", "claim", "recover", "submitAll", "releaseAll", "clearCompleted"].map((key) => [key, { value: "", querySelector: () => ({}) }]));
+  const state = { assignee: "test", orders: [{ state: "completed" }, { state: "submitting" }] };
+  const controls = new Function("els", "state", "activeOrders", "detectPlatform", "batchBusy", "claimBusy", "serverOnline", "MAX_ACTIVE_ORDERS", functionBody("renderControls"));
+  controls(els, state, () => [state.orders[1]], () => ({}), true, false, true, 100);
+  assert.equal(els.clearCompleted.disabled, false);
+  const clear = new Function("state", "saveState", "render", "setDeck", functionBody("clearFinishedCards"));
+  clear(state, () => {}, () => {}, () => {});
+  assert.deepEqual(state.orders, [{ state: "submitting" }]);
+});
+
+test("a rejected batch submission releases the busy state", async () => {
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const run = new AsyncFunction("state", "detectPlatform", "setDeck", "renderControls", "runPool", "submitOrder", `let batchBusy = false; try { ${functionBody("submitAllReady")} } finally { return batchBusy; }`);
+  const busy = await run({ orders: [{ state: "claimed", shareUrl: "valid" }] }, () => ({ platform: "豆包" }), () => {}, () => {}, async () => { throw new Error("storage failure"); }, () => {});
+  assert.equal(busy, false);
+});
+
 test("claim requests can include selected pending-view row numbers", () => {
   const body = functionBody("claimBatch");
   assert.match(body, /rowNumbers/);
