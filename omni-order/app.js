@@ -53,6 +53,7 @@ let state = loadState();
 let serverOnline = false;
 let claimBusy = false;
 let batchBusy = false;
+let recoveryBusy = false;
 let toastTimer = 0;
 const pollers = new Map();
 
@@ -200,12 +201,18 @@ async function pollClaimBatch(jobId, targeted = false) {
 }
 
 async function recoverOrders(silent = false) {
+  if (recoveryBusy) return;
   const candidates = activeOrders().map(({ recordId, lockId }) => ({ recordId, lockId }));
   if (!state.assignee) {
     if (!silent) setDeck("没有接单人信息，无法恢复订单。", "error");
     return;
   }
-  if (!silent) setDeck("正在按接单人扫描飞书中的活动订单…", "warn");
+  recoveryBusy = true;
+  renderControls();
+  if (!silent) setDeck("正在校验订单，通常需要几秒…", "warn");
+  const waitingHint = setTimeout(() => {
+    if (!silent) setDeck("飞书查询较慢，仍在等待结果；可以继续填写其他卡片。", "warn");
+  }, 5000);
   try {
     const [assigneeResult, localResult] = await Promise.allSettled([
       api("/api/order/recover-by-assignee", { assignee: state.assignee, limit: MAX_ACTIVE_ORDERS }, 60000),
@@ -233,6 +240,10 @@ async function recoverOrders(silent = false) {
     if (!silent) setDeck(`恢复完成：${recoveredById.size} 个有效订单。`, "success");
   } catch (error) {
     if (!silent) setDeck(error.message || "恢复订单失败", "error");
+  } finally {
+    clearTimeout(waitingHint);
+    recoveryBusy = false;
+    renderControls();
   }
 }
 
@@ -483,9 +494,26 @@ function clearFinishedCards() {
 }
 
 function render() {
+  const ordersById = new Map(state.orders.map((order) => [order.recordId, order]));
+  const existingIds = new Set();
+  for (const card of Array.from(els.grid.children)) {
+    const order = ordersById.get(card.dataset.recordId);
+    if (!order) {
+      card.remove();
+      continue;
+    }
+    existingIds.add(order.recordId);
+    syncOrderCard(card, order);
+  }
   const fragment = document.createDocumentFragment();
-  state.orders.forEach((order, index) => fragment.appendChild(renderOrder(order, index)));
-  els.grid.replaceChildren(fragment);
+  state.orders.forEach((order, index) => {
+    if (!existingIds.has(order.recordId)) fragment.appendChild(renderOrder(order, index));
+  });
+  els.grid.appendChild(fragment);
+  Array.from(els.grid.children).forEach((card, index) => {
+    const order = ordersById.get(card.dataset.recordId);
+    card.querySelector(".card-sequence").textContent = `ORDER ${pad(index + 1)}${order.rowNumber ? ` · 飞书行 ${order.rowNumber}` : ""}`;
+  });
   els.empty.classList.toggle("hidden", state.orders.length > 0);
   renderMetrics();
   renderControls();
@@ -570,12 +598,13 @@ function renderControls() {
   const hasRowSelection = Boolean(els.rowNumbers.value.trim());
   const releasable = state.orders.some((order) => ["claimed", "error"].includes(order.state));
   const submittable = state.orders.some((order) => ["claimed", "error"].includes(order.state) && detectPlatform(order.shareUrl).platform);
-  els.assignee.disabled = active > 0 || claimBusy || batchBusy;
+  els.assignee.disabled = active > 0 || claimBusy || batchBusy || recoveryBusy;
   els.rowNumbers.disabled = claimBusy || batchBusy || active >= MAX_ACTIVE_ORDERS;
   els.quantity.disabled = claimBusy || batchBusy || active >= MAX_ACTIVE_ORDERS || hasRowSelection;
   els.claim.disabled = !serverOnline || claimBusy || batchBusy || active >= MAX_ACTIVE_ORDERS;
   els.claim.querySelector("span").textContent = claimBusy ? "接单中…" : (hasRowSelection ? "领取指定行" : "批量接单");
-  els.recover.disabled = batchBusy || !state.assignee;
+  els.recover.disabled = batchBusy || recoveryBusy || !state.assignee;
+  els.recover.textContent = recoveryBusy ? "正在校验…" : "校验并恢复";
   els.submitAll.disabled = batchBusy || !submittable;
   els.releaseAll.disabled = batchBusy || !releasable;
   els.clearCompleted.disabled = !state.orders.some((order) => ["completed", "lost"].includes(order.state));

@@ -39,12 +39,27 @@ test("saving state does not reorder completed cards", () => {
 test("completed cards can be cleared while a batch is still submitting", () => {
   const els = Object.fromEntries(["assignee", "rowNumbers", "quantity", "claim", "recover", "submitAll", "releaseAll", "clearCompleted"].map((key) => [key, { value: "", querySelector: () => ({}) }]));
   const state = { assignee: "test", orders: [{ state: "completed" }, { state: "submitting" }] };
-  const controls = new Function("els", "state", "activeOrders", "detectPlatform", "batchBusy", "claimBusy", "serverOnline", "MAX_ACTIVE_ORDERS", functionBody("renderControls"));
-  controls(els, state, () => [state.orders[1]], () => ({}), true, false, true, 100);
+  const controls = new Function("els", "state", "activeOrders", "detectPlatform", "batchBusy", "claimBusy", "serverOnline", "MAX_ACTIVE_ORDERS", "recoveryBusy", functionBody("renderControls"));
+  controls(els, state, () => [state.orders[1]], () => ({}), true, false, true, 100, false);
   assert.equal(els.clearCompleted.disabled, false);
   const clear = new Function("state", "saveState", "render", "setDeck", functionBody("clearFinishedCards"));
   clear(state, () => {}, () => {}, () => {});
   assert.deepEqual(state.orders, [{ state: "submitting" }]);
+});
+
+test("clearing historical cards keeps active DOM nodes and does not reload their images", () => {
+  const children = [];
+  const active = { dataset: { recordId: "active" }, input: "draft", querySelector: () => ({}) };
+  const done = { dataset: { recordId: "done" }, remove() { children.splice(children.indexOf(this), 1); } };
+  children.push(done, active);
+  const state = { orders: [{ recordId: "active", state: "claimed" }] };
+  const els = { grid: { children, appendChild() {} }, empty: { classList: { toggle() {} } } };
+  const render = new Function("state", "els", "document", "syncOrderCard", "renderOrder", "renderMetrics", "renderControls", "pad", functionBody("render"));
+  let updated = 0;
+  render(state, els, { createDocumentFragment: () => ({ appendChild() {} }) }, (card) => { assert.equal(card, active); updated++; }, () => { throw new Error("existing card must not be recreated"); }, () => {}, () => {}, String);
+  assert.deepEqual(children, [active]);
+  assert.equal(active.input, "draft");
+  assert.equal(updated, 1);
 });
 
 test("a rejected batch submission releases the busy state", async () => {
