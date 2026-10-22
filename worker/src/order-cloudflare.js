@@ -17,7 +17,7 @@ export async function handleOrderApi(request, url, env, ctx) {
       archiveConfigured: Boolean(env.ORDER_VIDEOS && env.R2_PUBLIC_BASE_URL),
       runtime: "cloudflare",
       originServerRequired: false,
-      features: ["multi-platform-order-web", "async-batch-claim", "assignee-recovery", "direct-order-file-upload", "cloudflare-native-order-api"],
+      features: ["multi-platform-order-web", "async-batch-claim", "assignee-recovery", "direct-order-file-upload", "legacy-plugin-compatible", "cloudflare-native-order-api"],
     });
   }
   if (request.method === "GET" && url.pathname === "/api/image-proxy") return proxyOrderImage(url);
@@ -28,6 +28,9 @@ export async function handleOrderApi(request, url, env, ctx) {
     "/api/order/recover-by-assignee", "/api/order/complete", "/api/order/complete-status",
     "/api/order/release-batch", "/api/release", "/api/order/file-upload/prepare",
     "/api/order/file-upload/authorize", "/api/order/file-upload/complete",
+    "/api/claim", "/api/complete", "/api/complete-status", "/api/stats",
+    "/api/omni/claim-batch", "/api/omni/recover", "/api/omni/complete",
+    "/api/omni/complete-status", "/api/omni/release-batch",
   ]);
   if (!postRoutes.has(url.pathname)) return fail("不支持的接单 API 路径", 404);
 
@@ -48,6 +51,15 @@ export async function handleOrderApi(request, url, env, ctx) {
       case "/api/order/file-upload/prepare": return ok(await prepareOrderFileUpload(body, env));
       case "/api/order/file-upload/authorize": return ok(await authorizeOrderFileUpload(body, env));
       case "/api/order/file-upload/complete": return ok(await completeOrderFileUpload(body, env));
+      case "/api/claim": return ok(await claimOneNow(body, env));
+      case "/api/complete": return ok(await completeLegacy(body, env));
+      case "/api/complete-status": return ok(await getJob(body.jobId, "complete", env));
+      case "/api/stats": return ok(await getStats(env));
+      case "/api/omni/claim-batch": return ok(await claimBatchNow({ ...body, platform: "Omni" }, env));
+      case "/api/omni/recover": return ok(await recoverOrders(body, env));
+      case "/api/omni/complete": return ok(await startCompleteJob({ ...body, shareUrl: body.flowShareUrl || body.shareUrl }, env));
+      case "/api/omni/complete-status": return ok(await getJob(body.jobId, "complete", env));
+      case "/api/omni/release-batch": return ok(await releaseBatch(body, env));
       default: return fail("不支持的接单 API 路径", 404);
     }
   } catch (error) {
@@ -99,31 +111,53 @@ async function runClaimJob(jobId, env) {
   if (!job || job.status !== "processing") return;
   const payload = parseJson(job.payload);
   try {
-    const records = (await listPendingRecords(env)).filter((record) => fieldText(record.fields?.[field(env, "STATUS", "任务状态")]) === status(env, "PENDING", "待接单"));
-    const requestedRows = payload.rowNumbers || [];
-    const entries = requestedRows.length
-      ? requestedRows.map((rowNumber) => ({ rowNumber, record: records[rowNumber - 1] })).filter((item) => item.record)
-      : records.slice(0, payload.requested).map((record, index) => ({ record, rowNumber: index + 1 }));
-    const missing = requestedRows.filter((rowNumber) => !records[rowNumber - 1]);
-    const orders = [];
-    let firstError = "";
-    for (const entry of entries) {
-      try { orders.push(await claimRecord(entry.record, payload.assignee, entry.rowNumber, env)); }
-      catch (error) { firstError ||= publicError(error); }
-      await updateJobProgress(jobId, orders.length, payload.requested, env);
-    }
-    let error = firstError;
-    if (missing.length) error = [error, `待接单视图中找不到行号：${missing.join("、")}`].filter(Boolean).join("；");
-    if (orders.length < payload.requested && !error) error = entries.length < payload.requested ? "当前待接单任务数量不足" : "部分任务未能完成加锁";
-    const result = { ok: orders.length > 0, requested: payload.requested, claimed: orders.length, partial: orders.length < payload.requested, orders, error: orders.length ? error : (error || "暂无待接单任务") };
-    await finishJob(jobId, result.ok ? "completed" : "failed", result, result.ok ? `接单完成：成功 ${orders.length} 单` : result.error, result.error, env);
+    const result = await withClaimLease(env, () => performClaim(payload, env, async (claimed) => {
+      await updateJobProgress(jobId, claimed, payload.requested, env);
+    }));
+    await finishJob(jobId, result.ok ? "completed" : "failed", result, result.ok ? `接单完成：成功 ${result.claimed} 单` : result.error, result.error, env);
   } catch (error) {
     await finishJob(jobId, "failed", {}, publicError(error), publicError(error), env);
     throw error;
   }
 }
 
-async function claimRecord(record, assignee, rowNumber, env) {
+async function performClaim(payload, env, onProgress = async () => {}) {
+  const records = (await listPendingRecords(env)).filter((record) => fieldText(record.fields?.[field(env, "STATUS", "任务状态")]) === status(env, "PENDING", "待接单"));
+  const requestedRows = payload.rowNumbers || [];
+  const entries = requestedRows.length
+    ? requestedRows.map((rowNumber) => ({ rowNumber, record: records[rowNumber - 1] })).filter((item) => item.record)
+    : records.slice(0, payload.requested).map((record, index) => ({ record, rowNumber: index + 1 }));
+  const missing = requestedRows.filter((rowNumber) => !records[rowNumber - 1]);
+  const orders = [];
+  let firstError = "";
+  for (const entry of entries) {
+    try { orders.push(await claimRecord(entry.record, payload.assignee, entry.rowNumber, env, payload.platform)); }
+    catch (error) { firstError ||= publicError(error); }
+    await onProgress(orders.length);
+  }
+  let error = firstError;
+  if (missing.length) error = [error, `待接单视图中找不到行号：${missing.join("、")}`].filter(Boolean).join("；");
+  if (orders.length < payload.requested && !error) error = entries.length < payload.requested ? "当前待接单任务数量不足" : "部分任务未能完成加锁";
+  return { ok: orders.length > 0, requested: payload.requested, claimed: orders.length, partial: orders.length < payload.requested, orders, error: orders.length ? error : (error || "暂无待接单任务") };
+}
+
+async function claimBatchNow(body, env) {
+  requireBindings(env);
+  const assignee = text(body?.assignee);
+  const rowNumbers = normalizeRows(body?.rowNumbers);
+  const requested = rowNumbers.length || Number.parseInt(body?.count, 10);
+  if (!assignee) throw new PublicError("请输入接单人", 400);
+  if (!Number.isInteger(requested) || requested < 1 || requested > MAX_BATCH) throw new PublicError(`批量接单数量必须是 1–${MAX_BATCH}`, 400);
+  return withClaimLease(env, () => performClaim({ assignee, requested, rowNumbers, platform: text(body?.platform) }, env));
+}
+
+async function claimOneNow(body, env) {
+  const result = await claimBatchNow({ ...body, count: 1 }, env);
+  if (!result.orders.length) throw new PublicError(result.error || "暂无待接单任务", 409);
+  return result.orders[0];
+}
+
+async function claimRecord(record, assignee, rowNumber, env, platform = "") {
   const fields = record.fields || {};
   if (fieldText(fields[field(env, "STATUS", "任务状态")]) !== status(env, "PENDING", "待接单")) throw new Error("任务已被其他人领取");
   const lockId = crypto.randomUUID();
@@ -134,10 +168,27 @@ async function claimRecord(record, assignee, rowNumber, env) {
     [field(env, "LOCK_ID", "接单锁ID")]: lockId,
     [field(env, "LOG", "接单日志")]: appendLog(fieldText(fields[field(env, "LOG", "接单日志")]), `${assignee} 于 ${nowText()}接单 · 待接单视图第 ${rowNumber} 行`),
   };
+  if (platform) next[field(env, "PLATFORM", "制作平台")] = platform;
   await updateRecord(record.record_id, next, env);
   const confirmed = await getRecord(record.record_id, env);
   if (fieldText(confirmed.fields?.[field(env, "LOCK_ID", "接单锁ID")]) !== lockId) throw new Error("接单锁确认失败，请重试");
   return buildOrder(confirmed, assignee, rowNumber, env);
+}
+
+async function withClaimLease(env, callback) {
+  const holder = crypto.randomUUID();
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const now = Date.now();
+    const result = await env.ORDER_DB.prepare(`INSERT INTO order_leases (name,holder,expires_at) VALUES ('claim',?,?)
+      ON CONFLICT(name) DO UPDATE SET holder=excluded.holder,expires_at=excluded.expires_at
+      WHERE order_leases.expires_at < ?`).bind(holder, now + 15 * 60_000, now).run();
+    if (Number(result.meta?.changes || result.changes || 0) === 1) {
+      try { return await callback(); }
+      finally { await env.ORDER_DB.prepare("DELETE FROM order_leases WHERE name='claim' AND holder=?").bind(holder).run().catch(() => {}); }
+    }
+    await delay(300 + attempt * 200);
+  }
+  throw new PublicError("当前接单人数较多，请稍后重试", 409);
 }
 
 async function recoverOrders(body, env) {
@@ -208,22 +259,51 @@ async function startCompleteJob(body, env) {
   return { ...publicJob(await jobRow(jobId, env)), platform };
 }
 
+async function completeLegacy(body, env) {
+  const directUrl = normalizePublicHttps(body?.videoUrl);
+  if (!body?.directComplete || !directUrl) {
+    return startCompleteJob({ ...body, shareUrl: body?.watermarkUrl || body?.shareUrl }, env);
+  }
+  requireBindings(env);
+  const recordId = text(body?.recordId), lockId = text(body?.lockId), assignee = text(body?.assignee);
+  if (!recordId || !lockId || !assignee) throw new PublicError("缺少 recordId、lockId 或接单人", 400);
+  const record = await getRecord(recordId, env);
+  assertLock(record, lockId, assignee, env);
+  const existing = await env.ORDER_DB.prepare("SELECT * FROM order_jobs WHERE record_id=? AND lock_id=? AND type='complete' AND status='processing' ORDER BY created_at DESC LIMIT 1")
+    .bind(recordId, lockId).first();
+  if (existing) return { ...publicJob(existing), archiving: true };
+  const now = Date.now(), jobId = crypto.randomUUID();
+  await env.ORDER_DB.prepare(`INSERT INTO order_jobs
+    (id,type,status,assignee,record_id,lock_id,payload,result,message,created_at,updated_at,expires_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .bind(jobId, "complete", "processing", assignee, recordId, lockId,
+      JSON.stringify({ recordId, lockId, assignee, platform: "直链", sourceUrl: directUrl }), "{}",
+      "已接收视频直链，等待写入 Cloudflare R2", now, now, now + JOB_TTL_MS).run();
+  await env.ORDER_JOBS.send({ kind: "complete", jobId });
+  return { ...publicJob(await jobRow(jobId, env)), archiving: true };
+}
+
 async function runCompleteJob(jobId, env) {
   const job = await jobRow(jobId, env);
   if (!job || job.status !== "processing") return;
   const payload = parseJson(job.payload);
   try {
-    await setJobMessage(jobId, payload.platform === "Omni" ? "正在从 Flow 获取视频" : "正在解析豆包无水印视频", env);
+    await setJobMessage(jobId, payload.platform === "Omni" ? "正在从 Flow 获取视频" : payload.platform === "直链" ? "正在读取浏览器捕获的视频" : "正在解析豆包无水印视频", env);
     const sourceUrl = payload.platform === "Omni"
       ? flowSource(payload.shareUrl)
-      : await resolveDoubaoVideo(payload.shareUrl, payload.fallbackApi);
+      : payload.platform === "直链"
+        ? normalizePublicHttps(payload.sourceUrl)
+        : await resolveDoubaoVideo(payload.shareUrl, payload.fallbackApi);
+    if (!sourceUrl) throw new Error("视频直链无效或不可访问");
     await setJobMessage(jobId, "正在把视频流写入 Cloudflare R2", env);
     const archived = await streamVideoToR2(sourceUrl, payload, env);
     const record = await getRecord(payload.recordId, env);
     assertLock(record, payload.lockId, payload.assignee, env);
     const log = payload.platform === "Omni"
       ? `${payload.assignee} 于 ${nowText()} 完成 Omni 视频转存：${archived.publicUrl}；Flow 分享链接：${payload.shareUrl}`
-      : `${payload.assignee} 于 ${nowText()} 完成豆包无水印视频转存：${archived.publicUrl}；豆包分享链接：${payload.shareUrl}`;
+      : payload.platform === "直链"
+        ? `${payload.assignee} 于 ${nowText()} 完成浏览器视频直链转存：${archived.publicUrl}`
+        : `${payload.assignee} 于 ${nowText()} 完成豆包无水印视频转存：${archived.publicUrl}；豆包分享链接：${payload.shareUrl}`;
     await updateRecord(payload.recordId, {
       [field(env, "STATUS", "任务状态")]: status(env, "DONE", "已完成"),
       [field(env, "COMPLETED_AT", "完成时间")]: Date.now(),
@@ -277,6 +357,26 @@ async function releaseOrder(body, env) {
     [field(env, "LOG", "接单日志")]: appendLog(fieldText(fields[field(env, "LOG", "接单日志")]), `${assignee || "接单人"} 于 ${nowText()} 释放任务：${text(body?.reason) || "用户释放任务"}`),
   }, env);
   return { ok: true };
+}
+
+async function getStats(env) {
+  const [pending, inProgress, done, garbage] = await Promise.all([
+    countRecordsByStatus(status(env, "PENDING", "待接单"), env),
+    countRecordsByStatus(status(env, "IN_PROGRESS", "接单中"), env),
+    countRecordsByStatus(status(env, "DONE", "已完成"), env),
+    countRecordsByStatus(status(env, "GARBAGE", "垃圾任务"), env),
+  ]);
+  const counts = { pending, inProgress, done, garbage, other: 0, total: pending + inProgress + done + garbage };
+  return { counts };
+}
+
+async function countRecordsByStatus(value, env) {
+  const token = await tenantToken(env);
+  const url = new URL(`https://open.feishu.cn/open-apis/bitable/v1/apps/${env.FEISHU_APP_TOKEN}/tables/${env.FEISHU_TABLE_ID}/records`);
+  url.searchParams.set("page_size", "1");
+  url.searchParams.set("filter", `CurrentValue.[${field(env, "STATUS", "任务状态")}]="${escapeFilter(value)}"`);
+  const data = await feishuJson(url, { headers: { Authorization: `Bearer ${token}` } });
+  return Number(data.data?.total || 0);
 }
 
 async function prepareOrderFileUpload(body, env) {
@@ -510,7 +610,13 @@ function owns(record, lockId, assignee, env) {
     && fieldText(fields[field(env, "ASSIGNEE", "接单人")]) === assignee
     && [status(env, "IN_PROGRESS", "接单中"), status(env, "DONE", "已完成")].includes(fieldText(fields[field(env, "STATUS", "任务状态")]));
 }
-function assertLock(record, lockId, assignee, env) { if (!owns(record, lockId, assignee, env) || fieldText(record.fields?.[field(env, "STATUS", "任务状态")]) !== status(env, "IN_PROGRESS", "接单中")) throw new PublicError("接单锁、接单人或任务状态不匹配", 409); }
+function assertLock(record, lockId, assignee, env) {
+  const fields = record.fields || {};
+  const matches = fieldText(fields[field(env, "LOCK_ID", "接单锁ID")]) === lockId
+    && (!assignee || fieldText(fields[field(env, "ASSIGNEE", "接单人")]) === assignee)
+    && fieldText(fields[field(env, "STATUS", "任务状态")]) === status(env, "IN_PROGRESS", "接单中");
+  if (!matches) throw new PublicError("接单锁、接单人或任务状态不匹配", 409);
+}
 function field(env, suffix, fallback) { return env[`FIELD_${suffix}`] || fallback; }
 function status(env, suffix, fallback) { return env[`STATUS_${suffix}`] || fallback; }
 function requireBindings(env) { if (!env.ORDER_DB || !env.ORDER_JOBS || !env.ORDER_VIDEOS || !env.FEISHU_APP_ID || !env.FEISHU_APP_SECRET || !env.FEISHU_APP_TOKEN || !env.FEISHU_TABLE_ID) throw new Error("Cloudflare 接单服务配置不完整"); }
@@ -534,6 +640,7 @@ function extension(value) { try { return extension(new URL(value).pathname); } c
 function objectKeyFor(recordId, source, env) { const date = new Date(), prefix = text(env.R2_PREFIX || "mailab/videos").replace(/^\/+|\/+$/g, ""); return `${prefix}/${date.getUTCFullYear()}/${String(date.getUTCMonth() + 1).padStart(2, "0")}/${String(date.getUTCDate()).padStart(2, "0")}/${slug(recordId)}-${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}${extension(source)}`; }
 function publicR2Url(key, env) { const base = text(env.R2_PUBLIC_BASE_URL).replace(/\/+$/, ""); if (!base) throw new Error("缺少 R2_PUBLIC_BASE_URL"); return `${base}/${key.split("/").map(encodeURIComponent).join("/")}`; }
 function normalizeHttp(value) { try { const url = new URL(text(value)); return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password ? url.toString() : ""; } catch { return ""; } }
+function normalizePublicHttps(value) { try { const url = new URL(text(value)); return url.protocol === "https:" && !url.username && !url.password && !isPrivateHost(url.hostname) ? url.toString() : ""; } catch { return ""; } }
 function isPrivateHost(host) { return host === "localhost" || host === "127.0.0.1" || host === "::1" || /^10\.|^192\.168\.|^169\.254\.|^172\.(1[6-9]|2\d|3[01])\./.test(host); }
 function fieldText(value) { if (value == null) return ""; if (["string", "number", "boolean"].includes(typeof value)) return String(value); if (Array.isArray(value)) return value.map(fieldText).filter(Boolean).join(""); if (typeof value === "object") return fieldText(value.text ?? value.name ?? value.link ?? value.url ?? ""); return String(value); }
 function extractRow(value) { const matches = [...text(value).matchAll(/(?:待接单视图|兼职表)第\s*(\d+)\s*行/g)]; return Number(matches.at(-1)?.[1] || 0); }
