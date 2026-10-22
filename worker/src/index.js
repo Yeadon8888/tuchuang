@@ -21,6 +21,8 @@ const ORDER_API_ROUTES = new Map([
   ["POST /api/order/recover-by-assignee", true],
   ["POST /api/order/complete", true],
   ["POST /api/order/complete-status", true],
+  ["POST /api/order/file-upload/prepare", true],
+  ["POST /api/order/file-upload/complete", true],
   ["POST /api/order/release-batch", true],
   ["POST /api/release", true],
 ]);
@@ -31,8 +33,8 @@ const FLOW_VIDEO_PATHS = [
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "DELETE, GET, HEAD, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "X-Auth-Code, Content-Type",
+  "Access-Control-Allow-Methods": "DELETE, GET, HEAD, POST, PUT, OPTIONS",
+  "Access-Control-Allow-Headers": "X-Auth-Code, X-Upload-Ticket, Content-Type",
 };
 
 export default {
@@ -63,6 +65,10 @@ export default {
 
     if (request.method === "POST" && url.pathname === "/upload") {
       return uploadFile(request, env, url);
+    }
+
+    if (request.method === "PUT" && url.pathname === "/order-file-upload") {
+      return uploadOrderVideoFile(request, env);
     }
 
     if (request.method === "POST" && url.pathname === "/import/flow") {
@@ -143,6 +149,71 @@ async function proxyOrderApi(request, url, env) {
     statusText: upstream.statusText,
     headers: responseHeaders,
   });
+}
+
+async function uploadOrderVideoFile(request, env) {
+  const ticket = String(request.headers.get("X-Upload-Ticket") || "").trim();
+  const contentType = String(request.headers.get("Content-Type") || "application/octet-stream").split(";")[0].trim().toLowerCase();
+  const contentLength = Number.parseInt(request.headers.get("Content-Length") || "0", 10);
+  const maxBytes = getMaxUploadBytes(env);
+  if (!ticket) return json({ error: "缺少上传票据" }, 401);
+  if (!Number.isSafeInteger(contentLength) || contentLength <= 0) return json({ error: "无法确认视频文件大小" }, 411);
+  if (contentLength > maxBytes) return json({ error: `视频太大，最大支持 ${formatBytes(maxBytes)}` }, 413);
+  if (!request.body) return json({ error: "没有收到视频文件" }, 400);
+
+  let authorization;
+  try {
+    authorization = await callPrivateOrderApi(env, "/api/order/file-upload/authorize", {
+      ticket,
+      contentLength,
+      contentType,
+    });
+  } catch (error) {
+    return json({ error: error instanceof Error ? error.message : "上传授权失败" }, 403);
+  }
+
+  try {
+    const object = await env.IMAGES.put(authorization.objectKey, request.body, {
+      httpMetadata: { contentType: authorization.contentType },
+      customMetadata: {
+        originalName: authorization.fileName,
+        kind: "video",
+        uploadedAt: new Date().toISOString(),
+        storagePolicy: "permanent",
+        source: "order-file-upload",
+      },
+    });
+    if (!object) throw new Error("R2 没有确认上传结果");
+  } catch (error) {
+    console.error("order file upload failed", {
+      key: authorization.objectKey,
+      size: contentLength,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return json({ error: "R2 上传失败，请保留当前卡片后重试", retryable: true }, 503);
+  }
+
+  return json({
+    ok: true,
+    uploaded: true,
+    ticket,
+    videoUrl: authorization.publicUrl,
+    size: contentLength,
+  });
+}
+
+async function callPrivateOrderApi(env, pathname, payload) {
+  const response = await env.ORDER_API.fetch(new URL(pathname, ORDER_API_ORIGIN), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Mailab-Edge-Gateway": "tuchuang-api",
+    },
+    body: JSON.stringify(payload || {}),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.ok) throw new Error(data.error || `接单服务器返回 HTTP ${response.status}`);
+  return data;
 }
 
 async function resolveDoubaoThread(url) {

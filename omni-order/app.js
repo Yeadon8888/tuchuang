@@ -11,6 +11,7 @@ const LEGACY_STATE_KEY = "mailab_omni_batch_workbench_v1";
 const BATCH_SIZE_OPTIONS = [10, 30, 50, 100];
 const DEFAULT_BATCH_SIZE = 10;
 const MAX_ACTIVE_ORDERS = 100;
+const MAX_ORDER_FILE_BYTES = 100 * 1024 * 1024;
 
 const platformMeta = {
   Omni: { slug: "omni", input: "Flow 单视频公开分享链接", open: "打开 Flow", url: "https://labs.google/fx/tools/flow" },
@@ -21,6 +22,7 @@ const platformMeta = {
 const statusMeta = {
   claimed: { label: "待制作", message: "等待填写视频分享链接" },
   submitting: { label: "识别中", message: "正在识别链接并创建转存任务" },
+  uploading: { label: "上传中", message: "视频正在直传 Cloudflare R2" },
   processing: { label: "转存中", message: "正在获取视频并转存 R2" },
   completed: { label: "已完成", message: "R2 已验证并完成飞书回填" },
   error: { label: "可重试", message: "处理失败，订单仍保持接单中" },
@@ -94,6 +96,7 @@ function bindEvents() {
   els.releaseAll.addEventListener("click", releaseAllUnsubmitted);
   els.clearCompleted.addEventListener("click", clearFinishedCards);
   els.grid.addEventListener("input", handleGridInput);
+  els.grid.addEventListener("change", handleGridChange);
   els.grid.addEventListener("click", handleGridClick);
 }
 
@@ -291,7 +294,7 @@ function clearPendingClaim() {
 function handleGridInput(event) {
   if (event.target.dataset.action !== "share-input") return;
   const order = findOrder(event.target.closest("[data-record-id]")?.dataset.recordId);
-  if (!order || ["processing", "submitting", "completed", "lost"].includes(order.state)) return;
+  if (!order || ["processing", "submitting", "uploading", "completed", "lost"].includes(order.state)) return;
   order.shareUrl = event.target.value.trim();
   const detected = detectPlatform(order.shareUrl);
   order.platform = detected.platform;
@@ -299,6 +302,14 @@ function handleGridInput(event) {
   saveState();
   renderCardIdentity(event.target.closest("[data-record-id]"), order);
   renderControls();
+}
+
+function handleGridChange(event) {
+  if (event.target.dataset.action !== "file-input") return;
+  const order = findOrder(event.target.closest("[data-record-id]")?.dataset.recordId);
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (order && file) uploadOrderFile(order.recordId, file);
 }
 
 function handleGridClick(event) {
@@ -312,9 +323,117 @@ function handleGridClick(event) {
   else if (action === "copy-prompt") copyText(order.prompt, "提示词已复制");
   else if (action === "copy-image") copyImage(order);
   else if (action === "copy-id") copyText(order.recordId, "任务 ID 已复制");
+  else if (action === "upload-file") {
+    if (order.fileUploadTicket && order.fileUploadUploaded) finalizeOrderFile(order.recordId);
+    else button.closest("[data-record-id]").querySelector('[data-action="file-input"]').click();
+  }
   else if (action === "open-platform") {
     const platform = order.platform || "Omni";
     window.open(platformMeta[platform].url, "_blank", "noopener,noreferrer");
+  }
+}
+
+async function uploadOrderFile(recordId, file) {
+  const order = findOrder(recordId);
+  if (!order || ["submitting", "uploading", "processing", "completed", "lost"].includes(order.state)) return;
+  if (!/^video\//i.test(file.type || "") && !/\.(mp4|mov|webm|m4v)$/i.test(file.name || "")) {
+    order.state = "error"; order.message = "请选择 MP4、MOV、WebM 或 M4V 视频文件"; saveState(); updateOrderCard(recordId); return;
+  }
+  if (!file.size || file.size > MAX_ORDER_FILE_BYTES) {
+    order.state = "error"; order.message = "视频文件不能超过 100MB"; saveState(); updateOrderCard(recordId); return;
+  }
+
+  order.state = "submitting";
+  order.deliveryMode = "file";
+  order.fileUploadName = file.name;
+  order.fileUploadProgress = 0;
+  order.fileUploadUploaded = false;
+  order.message = "正在校验订单并申请 R2 直传票据";
+  saveState(); updateOrderCard(recordId);
+  try {
+    const prepared = await api("/api/order/file-upload/prepare", {
+      recordId: order.recordId,
+      lockId: order.lockId,
+      assignee: state.assignee || order.assignee,
+      fileName: file.name,
+      fileSize: file.size,
+      contentType: file.type || "application/octet-stream",
+    }, 30000);
+    if (!prepared.ok || !prepared.ticket) throw new Error(prepared.error || "未取得上传票据");
+    order.fileUploadTicket = prepared.ticket;
+    order.state = "uploading";
+    order.message = `正在直传 ${file.name} · 0%`;
+    saveState(); updateOrderCard(recordId);
+    const uploaded = await putOrderFile(prepared.ticket, file, (percent) => {
+      const current = findOrder(recordId);
+      if (!current || current.state !== "uploading") return;
+      current.fileUploadProgress = percent;
+      current.message = `正在直传 ${file.name} · ${percent}%`;
+      updateOrderCard(recordId);
+    });
+    order.fileUploadUploaded = true;
+    order.resultUrl = normalizeHttpUrl(uploaded.videoUrl);
+    order.state = "submitting";
+    order.message = "视频已进入 R2，正在验证并回填飞书";
+    saveState(); updateOrderCard(recordId);
+    await finalizeOrderFile(recordId);
+  } catch (error) {
+    order.state = "error";
+    order.message = error.message || "视频上传失败，可重新选择文件重试";
+    saveState(); updateOrderCard(recordId);
+  }
+}
+
+function putOrderFile(ticket, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("PUT", `${RESOLVER}/order-file-upload`);
+    request.setRequestHeader("X-Upload-Ticket", ticket);
+    request.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    request.timeout = 15 * 60 * 1000;
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress(Math.min(99, Math.round((event.loaded / event.total) * 100)));
+    };
+    request.onerror = () => reject(new Error("上传网络中断，请检查网络后重试"));
+    request.ontimeout = () => reject(new Error("视频上传超时，请重试"));
+    request.onload = () => {
+      let data = {};
+      try { data = JSON.parse(request.responseText || "{}"); } catch {}
+      if (request.status < 200 || request.status >= 300 || !data.ok) {
+        reject(new Error(data.error || `视频上传失败 HTTP ${request.status}`));
+        return;
+      }
+      onProgress(100);
+      resolve(data);
+    };
+    request.send(file);
+  });
+}
+
+async function finalizeOrderFile(recordId) {
+  const order = findOrder(recordId);
+  if (!order?.fileUploadTicket || !order.fileUploadUploaded) return;
+  order.state = "submitting";
+  order.message = "正在验证 R2 视频并回填飞书";
+  saveState(); updateOrderCard(recordId);
+  try {
+    const data = await api("/api/order/file-upload/complete", {
+      ticket: order.fileUploadTicket,
+      uploaded: true,
+    }, 90000);
+    if (!data.ok || data.status !== "completed") throw new Error(data.error || "视频回填失败");
+    Object.assign(order, {
+      state: "completed",
+      resultUrl: data.videoUrl || order.resultUrl,
+      message: "视频文件已直传 R2，并完成飞书回填",
+      completedAt: Date.now(),
+      fileUploadProgress: 100,
+    });
+    saveState(); updateOrderCard(recordId); showToast(`${shortId(recordId)} 已完成视频文件回填`);
+  } catch (error) {
+    order.state = "error";
+    order.message = `${error.message || "飞书回填失败"}；视频已上传，可直接重试回填`;
+    saveState(); updateOrderCard(recordId);
   }
 }
 
@@ -463,7 +582,7 @@ async function releaseOrder(recordId) {
 
 async function releaseAllUnsubmitted() {
   if (batchBusy) return;
-  const candidates = state.orders.filter((order) => ["claimed", "error"].includes(order.state));
+  const candidates = state.orders.filter((order) => ["claimed", "error"].includes(order.state) && !order.fileUploadUploaded);
   if (!candidates.length) return setDeck("没有可批量释放的未转存订单。", "warn");
   if (!window.confirm(`确认释放 ${candidates.length} 个未转存订单？`)) return;
   batchBusy = true; setDeck(`正在释放 ${candidates.length} 个订单…`, "warn"); renderControls();
@@ -560,7 +679,7 @@ function syncOrderCard(article, order) {
 
   const input = article.querySelector('[data-action="share-input"]');
   if (document.activeElement !== input) input.value = order.shareUrl || "";
-  input.disabled = ["submitting", "processing", "completed", "lost"].includes(order.state);
+  input.disabled = ["submitting", "uploading", "processing", "completed", "lost"].includes(order.state);
 
   const result = article.querySelector(".result-link");
   result.classList.toggle("hidden", !order.resultUrl);
@@ -568,14 +687,24 @@ function syncOrderCard(article, order) {
   else result.removeAttribute("href");
 
   const submit = article.querySelector('[data-action="submit"]');
-  submit.disabled = ["submitting", "processing", "completed", "lost"].includes(order.state);
+  submit.disabled = ["submitting", "uploading", "processing", "completed", "lost"].includes(order.state);
   submit.textContent = order.state === "error" ? "重新转存并回填" : (order.state === "completed" ? "已完成" : "转存并回填");
-  article.querySelector('[data-action="release"]').disabled = !["claimed", "error"].includes(order.state);
+  article.querySelector('[data-action="release"]').disabled = !["claimed", "error"].includes(order.state) || order.fileUploadUploaded;
+
+  const fileButton = article.querySelector('[data-action="upload-file"]');
+  fileButton.disabled = ["submitting", "uploading", "processing", "completed", "lost"].includes(order.state);
+  fileButton.textContent = order.fileUploadUploaded
+    ? "重试验证并回填"
+    : (order.state === "uploading" ? `正在直传 ${order.fileUploadProgress || 0}%` : "选择视频文件直传");
+  const fileNote = article.querySelector(".file-upload-note");
+  fileNote.textContent = order.fileUploadName
+    ? `${order.fileUploadName}${order.fileUploadProgress ? ` · ${order.fileUploadProgress}%` : ""}`
+    : "Muse 等本地成片 · 最大 100MB · 不经过业务服务器";
 }
 
 function renderMetrics() {
   els.metricActive.textContent = pad(activeOrders().length);
-  els.metricProcessing.textContent = pad(state.orders.filter((order) => ["submitting", "processing"].includes(order.state)).length);
+  els.metricProcessing.textContent = pad(state.orders.filter((order) => ["submitting", "uploading", "processing"].includes(order.state)).length);
   els.metricCompleted.textContent = pad(state.orders.filter((order) => order.state === "completed").length);
 }
 
@@ -584,8 +713,8 @@ function renderCardIdentity(article, order) {
   const detected = detectPlatform(order.shareUrl);
   const platform = order.platform || detected.platform || "";
   const meta = platformMeta[platform];
-  article.dataset.platform = meta.slug;
-  article.querySelector(".platform-chip").textContent = platform || "待识别";
+  article.dataset.platform = order.deliveryMode === "file" ? "file" : meta.slug;
+  article.querySelector(".platform-chip").textContent = order.deliveryMode === "file" ? "视频文件" : (platform || "待识别");
   article.querySelector(".share-label").textContent = meta.input;
   const input = article.querySelector('[data-action="share-input"]');
   input.placeholder = "粘贴 Omni Flow 或豆包公开分享链接，系统自动识别";
@@ -596,7 +725,7 @@ function renderCardIdentity(article, order) {
 function renderControls() {
   const active = activeOrders().length;
   const hasRowSelection = Boolean(els.rowNumbers.value.trim());
-  const releasable = state.orders.some((order) => ["claimed", "error"].includes(order.state));
+  const releasable = state.orders.some((order) => ["claimed", "error"].includes(order.state) && !order.fileUploadUploaded);
   const submittable = state.orders.some((order) => ["claimed", "error"].includes(order.state) && detectPlatform(order.shareUrl).platform);
   els.assignee.disabled = active > 0 || claimBusy || batchBusy || recoveryBusy;
   els.rowNumbers.disabled = claimBusy || batchBusy || active >= MAX_ACTIVE_ORDERS;
@@ -634,6 +763,9 @@ function normalizeOrder(value) {
     shareUrl: String(value?.shareUrl || value?.flowShareUrl || ""), resultUrl: normalizeHttpUrl(value?.resultUrl || value?.videoUrl),
     state: Object.hasOwn(statusMeta, requestedState) ? requestedState : "claimed", jobId: String(value?.jobId || ""),
     message: String(value?.message || ""), createdAt: Number(value?.createdAt || Date.now()), completedAt: Number(value?.completedAt || 0),
+    deliveryMode: value?.deliveryMode === "file" ? "file" : "",
+    fileUploadTicket: String(value?.fileUploadTicket || ""), fileUploadName: String(value?.fileUploadName || ""),
+    fileUploadUploaded: Boolean(value?.fileUploadUploaded), fileUploadProgress: Number(value?.fileUploadProgress || 0),
   };
 }
 

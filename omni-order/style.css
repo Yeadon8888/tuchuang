@@ -473,6 +473,24 @@ input:focus, select:focus, textarea:focus {
 .flow-field { display: grid; gap: 8px; padding: 16px 22px 0 25px; }
 .flow-field input { width: 100%; height: 46px; padding: 0 12px; font: 500 11px/1 var(--mono); }
 
+.file-upload-field {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 22px 0 25px;
+}
+.hidden-file-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.button-file-upload {
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid rgba(201, 255, 67, .5);
+  background: var(--acid-soft);
+  color: var(--acid);
+  font-size: 11px;
+}
+.button-file-upload:hover { border-color: var(--acid); background: rgba(201, 255, 67, .2); }
+.file-upload-note { min-width: 0; color: var(--paper-muted); font: 500 10px/1.4 var(--mono); }
+
 .job-state { padding: 14px 22px 0 25px; }
 .job-state-line { display: flex; justify-content: space-between; gap: 14px; min-height: 18px; color: var(--paper-muted); font: 500 11px/1.4 var(--mono); }
 .job-message { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -562,6 +580,7 @@ input:focus, select:focus, textarea:focus {
   .empty-state { flex-direction: column; text-align: center; }
   .card-actions { grid-template-columns: 1fr; }
   .button-card-secondary { min-height: 42px; }
+  .file-upload-field { align-items: stretch; flex-direction: column; }
 }
 
 @media (prefers-reduced-motion: reduce) {

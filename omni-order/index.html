@@ -28,7 +28,7 @@
       <div class="hero-copy">
         <p class="eyebrow">MULTI-PLATFORM DESK / BATCH 10–100</p>
         <h1 id="page-title">批量接单<br><span>制作调度台</span></h1>
-        <p class="hero-note">从同一个公共任务池批量接单，在 Omni 或豆包完成制作；视频转存 R2 并验证可访问后，才会自动回填飞书。</p>
+        <p class="hero-note">从同一个公共任务池批量接单；可提交 Omni / 豆包分享链接，也可把 Muse 等渠道产出的视频文件直接上传 R2 并回填飞书。</p>
       </div>
       <div class="metrics" aria-label="当前工作台统计">
         <div class="metric">
@@ -148,6 +148,12 @@
         <input type="url" inputmode="url" autocomplete="off" placeholder="粘贴视频公开分享链接" data-action="share-input">
       </label>
 
+      <div class="file-upload-field">
+        <input class="hidden-file-input" type="file" accept="video/mp4,video/quicktime,video/webm,video/x-m4v,.mp4,.mov,.webm,.m4v" data-action="file-input">
+        <button class="button button-file-upload" type="button" data-action="upload-file">选择视频文件直传</button>
+        <span class="file-upload-note">Muse 等本地成片 · 最大 100MB · 不经过业务服务器</span>
+      </div>
+
       <div class="job-state">
         <div class="job-state-line">
           <span class="job-message">等待填写 Flow 链接</span>
@@ -165,6 +171,6 @@
     </article>
   </template>
 
-  <script src="app.js?v=20261002-card-reuse"></script>
+  <script src="app.js?v=20261022-direct-video-upload"></script>
 </body>
 </html>
