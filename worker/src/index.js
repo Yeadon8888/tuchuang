@@ -173,7 +173,9 @@ async function uploadOrderVideoFile(request, env) {
   }
 
   try {
-    const object = await env.IMAGES.put(authorization.objectKey, request.body, {
+    const orderVideos = env.ORDER_VIDEOS || env.IMAGES;
+    if (!orderVideos) throw new Error("接单成片 R2 尚未绑定");
+    const object = await orderVideos.put(authorization.objectKey, request.body, {
       httpMetadata: { contentType: authorization.contentType },
       customMetadata: {
         originalName: authorization.fileName,

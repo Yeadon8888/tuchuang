@@ -21,3 +21,7 @@ crons = ["0 3 * * *"]
 [[r2_buckets]]
 binding = "IMAGES"
 bucket_name = "tuchuang-images"
+
+[[r2_buckets]]
+binding = "ORDER_VIDEOS"
+bucket_name = "mailab-gen-video-videos"

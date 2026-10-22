@@ -85,7 +85,7 @@ test("streams an authorized order video directly into R2 without proxying bytes 
         }), { headers: { "Content-Type": "application/json" } });
       },
     },
-    IMAGES: {
+    ORDER_VIDEOS: {
       put: async (key, body, options) => {
         captured.puts.push({ key, body: [...new Uint8Array(await new Response(body).arrayBuffer())], options });
         return { key };
