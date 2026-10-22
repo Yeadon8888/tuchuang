@@ -63,6 +63,47 @@ test("streams an authorized order video into the archive R2 bucket without an or
   assert.deepEqual(puts[0].body, [1, 2, 3, 4]);
 });
 
+test("releases a batch with one Feishu read and one Feishu write", async () => {
+  const orders = Array.from({ length: 10 }, (_, index) => ({ recordId: `rec-${index}`, lockId: `lock-${index}` }));
+  const records = new Map(orders.map((order) => [order.recordId, {
+    record_id: order.recordId,
+    fields: { 任务状态: "接单中", 接单人: "tester", 接单锁ID: order.lockId, 失败次数: 0, 接单日志: "claimed" },
+  }]));
+  let recordReads = 0;
+  let recordWrites = 0;
+  globalThis.fetch = async (input, options = {}) => {
+    const url = String(input);
+    if (url.includes("tenant_access_token")) return Response.json({ code: 0, tenant_access_token: "token", expire: 7200 });
+    if (url.endsWith("/records/batch_get")) {
+      recordReads += 1;
+      return Response.json({ code: 0, data: { records: [...records.values()] } });
+    }
+    if (url.endsWith("/records/batch_update")) {
+      recordWrites += 1;
+      return Response.json({ code: 0, data: { records: JSON.parse(options.body).records } });
+    }
+    const recordId = decodeURIComponent(url.split("/records/")[1] || "");
+    if (options.method === "PUT") {
+      recordWrites += 1;
+      return Response.json({ code: 0, data: { record: records.get(recordId) } });
+    }
+    if (records.has(recordId)) {
+      recordReads += 1;
+      return Response.json({ code: 0, data: { record: records.get(recordId) } });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  const env = createReleaseEnv();
+  const response = await worker.fetch(new Request("https://edge.example/order-api/api/order/release-batch", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ assignee: "tester", orders }),
+  }), env);
+  const data = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(data.released, 10);
+  assert.equal(recordReads, 1);
+  assert.equal(recordWrites, 1);
+});
+
 function createEnv({ ticketRow, puts }) {
   return {
     FEISHU_APP_ID: "app", FEISHU_APP_SECRET: "secret", FEISHU_APP_TOKEN: "base-token", FEISHU_TABLE_ID: "table-id",
@@ -85,6 +126,18 @@ function createEnv({ ticketRow, puts }) {
       async put(key, body, options) {
         puts.push({ key, body: [...new Uint8Array(await new Response(body).arrayBuffer())], options });
         return { key };
+      },
+    },
+  };
+}
+
+function createReleaseEnv() {
+  return {
+    FEISHU_APP_ID: "app", FEISHU_APP_SECRET: "secret", FEISHU_APP_TOKEN: "base-token", FEISHU_TABLE_ID: "table-id",
+    R2_PUBLIC_BASE_URL: "https://r2.test", ORDER_JOBS: { async send() {} }, ORDER_VIDEOS: {},
+    ORDER_DB: {
+      prepare() {
+        return { bind() { return { async first() { return null; }, async run() { return { success: true }; } }; } };
       },
     },
   };
