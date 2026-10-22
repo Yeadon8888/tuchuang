@@ -1,19 +1,21 @@
 name = "tuchuang-api"
 main = "src/index.js"
-compatibility_date = "2026-08-27"
+compatibility_date = "2026-10-22"
 workers_dev = true
 
 routes = [
   { pattern = "picturebed.yeadon.top", custom_domain = true }
 ]
 
-[[vpc_services]]
-binding = "ORDER_API"
-service_id = "01a0f5b0-bc81-7211-b3e7-a59032b08f98"
-
 [vars]
 RETENTION_DAYS = "7"
 MAX_UPLOAD_BYTES = "104857600"
+FEISHU_APP_TOKEN = "YzN8bg9MiauKPFsvAAGckfD1ndh"
+FEISHU_TABLE_ID = "tblSeQxiOHaez9cl"
+FEISHU_PENDING_VIEW_ID = "vewkWeKu7I"
+R2_PUBLIC_BASE_URL = "https://pub-1608540c336744e2b483bf6bab9b7797.r2.dev"
+R2_PREFIX = "mailab/videos"
+MAX_FAIL_COUNT = "3"
 
 [triggers]
 crons = ["0 3 * * *"]
@@ -25,3 +27,21 @@ bucket_name = "tuchuang-images"
 [[r2_buckets]]
 binding = "ORDER_VIDEOS"
 bucket_name = "mailab-gen-video-videos"
+
+[[d1_databases]]
+binding = "ORDER_DB"
+database_name = "mailab-order-state"
+database_id = "314072ef-5f35-4c69-a81a-078c31e46958"
+migrations_dir = "migrations"
+
+[[queues.producers]]
+binding = "ORDER_JOBS"
+queue = "mailab-order-jobs"
+
+[[queues.consumers]]
+queue = "mailab-order-jobs"
+max_batch_size = 1
+max_batch_timeout = 1
+max_retries = 4
+dead_letter_queue = "mailab-order-jobs-dlq"
+max_concurrency = 1

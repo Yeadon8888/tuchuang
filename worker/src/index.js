@@ -1,3 +1,5 @@
+import { authorizeOrderFileUpload, handleOrderApi, handleOrderQueue } from "./order-cloudflare.js";
+
 const FALLBACK_AUTH_CODE = "1214";
 const DEFAULT_RETENTION_DAYS = 7;
 const DEFAULT_MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
@@ -8,24 +10,7 @@ const LEGACY_TEMPORARY_PREFIX = "uploads/";
 const FLOW_HOST = "labs.google";
 const DOUBAO_THREAD_PATH = /^\/thread\/[^/?#]+\/?$/i;
 const MAX_DOUBAO_HTML_BYTES = 4 * 1024 * 1024;
-const ORDER_API_ORIGIN = "http://127.0.0.1:8787";
 const ORDER_API_PREFIX = "/order-api";
-const MAX_ORDER_API_BODY_BYTES = 1024 * 1024;
-const ORDER_API_ROUTES = new Map([
-  ["GET /api/health", true],
-  ["GET /api/image-proxy", true],
-  ["POST /api/order/claim-batch", true],
-  ["POST /api/order/claim-batch/start", true],
-  ["POST /api/order/claim-batch/status", true],
-  ["POST /api/order/recover", true],
-  ["POST /api/order/recover-by-assignee", true],
-  ["POST /api/order/complete", true],
-  ["POST /api/order/complete-status", true],
-  ["POST /api/order/file-upload/prepare", true],
-  ["POST /api/order/file-upload/complete", true],
-  ["POST /api/order/release-batch", true],
-  ["POST /api/release", true],
-]);
 const FLOW_VIDEO_PATHS = [
   /^\/fx\/tools\/flow\/shared\/video\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/?$/i,
   /^\/fx\/api\/og-video\/shared\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/?$/i,
@@ -38,7 +23,7 @@ const corsHeaders = {
 };
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
     if (request.method === "OPTIONS") {
@@ -46,7 +31,14 @@ export default {
     }
 
     if (url.pathname === ORDER_API_PREFIX || url.pathname.startsWith(`${ORDER_API_PREFIX}/`)) {
-      return proxyOrderApi(request, url, env);
+      const upstreamPath = url.pathname.slice(ORDER_API_PREFIX.length) || "/";
+      const orderUrl = new URL(upstreamPath, url.origin);
+      orderUrl.search = url.search;
+      const response = await handleOrderApi(request, orderUrl, env, ctx);
+      const headers = new Headers(response.headers);
+      for (const [name, value] of Object.entries(corsHeaders)) headers.set(name, value);
+      headers.set("X-Mailab-Route", "cloudflare-native");
+      return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
     }
 
     if (request.method === "GET" && url.pathname === "/healthz") {
@@ -97,59 +89,11 @@ export default {
   async scheduled(_event, env, ctx) {
     ctx.waitUntil(cleanupExpiredObjects(env));
   },
+
+  async queue(batch, env) {
+    await handleOrderQueue(batch, env);
+  },
 };
-
-async function proxyOrderApi(request, url, env) {
-  const upstreamPath = url.pathname.slice(ORDER_API_PREFIX.length) || "/";
-  if (!ORDER_API_ROUTES.has(`${request.method} ${upstreamPath}`)) {
-    return json({ error: "不支持的接单 API 路径" }, 404);
-  }
-
-  const contentLength = Number.parseInt(request.headers.get("Content-Length") || "0", 10);
-  if (contentLength > MAX_ORDER_API_BODY_BYTES) {
-    return json({ error: "接单 API 请求体过大" }, 413);
-  }
-
-  const upstreamUrl = new URL(upstreamPath, ORDER_API_ORIGIN);
-  upstreamUrl.search = url.search;
-  const headers = new Headers();
-  for (const name of ["Accept", "Accept-Language", "Content-Type", "Range"]) {
-    const value = request.headers.get(name);
-    if (value) headers.set(name, value);
-  }
-  headers.set("X-Mailab-Edge-Gateway", "tuchuang-api");
-
-  let body;
-  if (!["GET", "HEAD"].includes(request.method)) {
-    body = await request.arrayBuffer();
-    if (body.byteLength > MAX_ORDER_API_BODY_BYTES) {
-      return json({ error: "接单 API 请求体过大" }, 413);
-    }
-  }
-
-  let upstream;
-  try {
-    upstream = await env.ORDER_API.fetch(upstreamUrl, {
-      method: request.method,
-      headers,
-      body,
-      redirect: "manual",
-    });
-  } catch {
-    return json({ error: "Cloudflare 无法连接接单服务器" }, 502);
-  }
-
-  const responseHeaders = new Headers(upstream.headers);
-  for (const [name, value] of Object.entries(corsHeaders)) responseHeaders.set(name, value);
-  responseHeaders.delete("Set-Cookie");
-  responseHeaders.set("Cache-Control", "no-store");
-  responseHeaders.set("X-Mailab-Route", "cloudflare");
-  return new Response(upstream.body, {
-    status: upstream.status,
-    statusText: upstream.statusText,
-    headers: responseHeaders,
-  });
-}
 
 async function uploadOrderVideoFile(request, env) {
   const ticket = String(request.headers.get("X-Upload-Ticket") || "").trim();
@@ -163,11 +107,11 @@ async function uploadOrderVideoFile(request, env) {
 
   let authorization;
   try {
-    authorization = await callPrivateOrderApi(env, "/api/order/file-upload/authorize", {
+    authorization = await authorizeOrderFileUpload({
       ticket,
       contentLength,
       contentType,
-    });
+    }, env);
   } catch (error) {
     return json({ error: error instanceof Error ? error.message : "上传授权失败" }, 403);
   }
@@ -202,20 +146,6 @@ async function uploadOrderVideoFile(request, env) {
     videoUrl: authorization.publicUrl,
     size: contentLength,
   });
-}
-
-async function callPrivateOrderApi(env, pathname, payload) {
-  const response = await env.ORDER_API.fetch(new URL(pathname, ORDER_API_ORIGIN), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-Mailab-Edge-Gateway": "tuchuang-api",
-    },
-    body: JSON.stringify(payload || {}),
-  });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.ok) throw new Error(data.error || `接单服务器返回 HTTP ${response.status}`);
-  return data;
 }
 
 async function resolveDoubaoThread(url) {

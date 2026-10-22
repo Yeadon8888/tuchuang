@@ -1,6 +1,6 @@
 const RESOLVER = "https://tuchuang-api.yeadon8888.workers.dev";
 const API_ROUTES = [
-  { base: `${RESOLVER}/order-api`, label: "Cloudflare 私网" },
+  { base: `${RESOLVER}/order-api`, label: "Cloudflare 原生" },
 ];
 let API = API_ROUTES[0].base;
 let apiRouteLabel = API_ROUTES[0].label;
@@ -111,7 +111,7 @@ async function checkHealth() {
   } catch (error) {
     serverOnline = false;
     els.serverState.className = "server-state offline";
-    els.serverStateText.textContent = "直连与 Cloudflare 均无法连接";
+    els.serverStateText.textContent = "Cloudflare 接单服务暂时无法连接";
   }
   renderControls();
 }
