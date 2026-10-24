@@ -104,6 +104,32 @@ test("releases a batch with one Feishu read and one Feishu write", async () => {
   assert.equal(recordWrites, 1);
 });
 
+test("recovers a completed Muse upload as completed instead of claimed", async () => {
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("tenant_access_token")) return Response.json({ code: 0, tenant_access_token: "token", expire: 7200 });
+    if (url.includes("/records/rec-muse-done")) {
+      return Response.json({ code: 0, data: { record: {
+        record_id: "rec-muse-done",
+        fields: {
+          任务状态: "已完成", 接单人: "6666", 接单锁ID: "lock-muse-done",
+          制作平台: "", 视频地址: "https://r2.test/mailab/videos/muse-done.mp4",
+        },
+      } } });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  const response = await worker.fetch(new Request("https://edge.example/order-api/api/order/recover", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ assignee: "6666", orders: [{ recordId: "rec-muse-done", lockId: "lock-muse-done" }] }),
+  }), createReleaseEnv());
+  const data = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(data.orders.length, 1);
+  assert.equal(data.orders[0].state, "completed");
+  assert.equal(data.orders[0].videoUrl, "https://r2.test/mailab/videos/muse-done.mp4");
+});
+
 function createEnv({ ticketRow, puts }) {
   return {
     FEISHU_APP_ID: "app", FEISHU_APP_SECRET: "secret", FEISHU_APP_TOKEN: "base-token", FEISHU_TABLE_ID: "table-id",

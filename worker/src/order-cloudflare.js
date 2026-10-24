@@ -223,6 +223,9 @@ async function recoverByAssignee(body, env) {
 
 async function buildRecoveredOrder(record, assignee, env) {
   const base = buildOrder(record, assignee, extractRow(fieldText(record.fields?.[field(env, "LOG", "接单日志")])), env);
+  if (base.status === status(env, "DONE", "已完成")) {
+    return { ...base, state: "completed", jobId: "", message: "视频已转存到 R2，飞书订单已完成" };
+  }
   const active = await env.ORDER_DB.prepare("SELECT id,message FROM order_jobs WHERE record_id=? AND lock_id=? AND type='complete' AND status='processing' ORDER BY created_at DESC LIMIT 1")
     .bind(base.recordId, base.lockId).first();
   return { ...base, state: active ? "processing" : "claimed", jobId: active?.id || "", message: active?.message || "已恢复接单状态" };
@@ -642,6 +645,7 @@ function buildOrder(record, assignee, rowNumber, env) {
     prompt: fieldText(fields[field(env, "PROMPT", "提示词")]), imageUrl: fieldText(fields[field(env, "IMAGE_URL", "图片地址")]),
     rowNumber: rowNumber || 0, platform: fieldText(fields[field(env, "PLATFORM", "制作平台")]),
     status: fieldText(fields[field(env, "STATUS", "任务状态")]), claimedAt: fieldText(fields[field(env, "CLAIMED_AT", "接单时间")]),
+    completedAt: fieldText(fields[field(env, "COMPLETED_AT", "完成时间")]),
     shareUrl: fieldText(fields[field(env, "WATERMARK_URL", "去水印原始链接")]), videoUrl: fieldText(fields[field(env, "VIDEO_URL", "视频地址")]),
   };
 }
