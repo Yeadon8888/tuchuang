@@ -197,9 +197,12 @@ async function recoverOrders(body, env) {
   if (!assignee) throw new PublicError("请输入接单人", 400);
   const orders = [];
   const missing = [];
+  const records = new Map((await batchGetRecords(candidates.map((candidate) => text(candidate?.recordId)).filter(Boolean), env))
+    .map((record) => [record.record_id, record]));
   for (const candidate of candidates) {
     try {
-      const record = await getRecord(text(candidate.recordId), env);
+      const record = records.get(text(candidate.recordId));
+      if (!record) throw new PublicError("飞书记录不存在", 404);
       if (!owns(record, text(candidate.lockId), assignee, env)) missing.push({ recordId: candidate.recordId, reason: "订单已释放、锁已变化或不属于当前接单人" });
       else orders.push(await buildRecoveredOrder(record, assignee, env));
     } catch (error) {

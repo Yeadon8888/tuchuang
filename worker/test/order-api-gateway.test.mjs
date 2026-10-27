@@ -105,17 +105,19 @@ test("releases a batch with one Feishu read and one Feishu write", async () => {
 });
 
 test("recovers a completed Muse upload as completed instead of claimed", async () => {
+  let recordReads = 0;
   globalThis.fetch = async (input) => {
     const url = String(input);
     if (url.includes("tenant_access_token")) return Response.json({ code: 0, tenant_access_token: "token", expire: 7200 });
-    if (url.includes("/records/rec-muse-done")) {
-      return Response.json({ code: 0, data: { record: {
+    if (url.endsWith("/records/batch_get")) {
+      recordReads += 1;
+      return Response.json({ code: 0, data: { records: [{
         record_id: "rec-muse-done",
         fields: {
           任务状态: "已完成", 接单人: "6666", 接单锁ID: "lock-muse-done",
           制作平台: "", 视频地址: "https://r2.test/mailab/videos/muse-done.mp4",
         },
-      } } });
+      }] } });
     }
     throw new Error(`unexpected fetch ${url}`);
   };
@@ -128,6 +130,7 @@ test("recovers a completed Muse upload as completed instead of claimed", async (
   assert.equal(data.orders.length, 1);
   assert.equal(data.orders[0].state, "completed");
   assert.equal(data.orders[0].videoUrl, "https://r2.test/mailab/videos/muse-done.mp4");
+  assert.equal(recordReads, 1);
 });
 
 function createEnv({ ticketRow, puts }) {

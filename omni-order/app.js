@@ -217,16 +217,13 @@ async function recoverOrders(silent = false) {
     if (!silent) setDeck("飞书查询较慢，仍在等待结果；可以继续填写其他卡片。", "warn");
   }, 5000);
   try {
-    const [assigneeResult, localResult] = await Promise.allSettled([
-      api("/api/order/recover-by-assignee", { assignee: state.assignee, limit: MAX_ACTIVE_ORDERS }, 60000),
-      candidates.length
-        ? api("/api/order/recover", { assignee: state.assignee, orders: candidates }, 60000)
-        : Promise.resolve({ ok: true, orders: [] }),
-    ]);
-    const assigneeData = assigneeResult.status === "fulfilled" && assigneeResult.value.ok ? assigneeResult.value : null;
-    const localData = localResult.status === "fulfilled" && localResult.value.ok ? localResult.value : null;
-    if (!assigneeData && !localData) {
-      throw new Error(assigneeResult.reason?.message || localResult.reason?.message || "恢复失败");
+    let assigneeData;
+    let localData;
+    try {
+      assigneeData = await api("/api/order/recover-by-assignee", { assignee: state.assignee, limit: MAX_ACTIVE_ORDERS }, 60000);
+    } catch (assigneeError) {
+      if (!candidates.length) throw assigneeError;
+      localData = await api("/api/order/recover", { assignee: state.assignee, orders: candidates }, 60000);
     }
     const recoveredById = new Map();
     for (const order of [...(assigneeData?.orders || []), ...(localData?.orders || [])]) {
