@@ -197,6 +197,7 @@ async function recoverOrders(body, env) {
   if (!assignee) throw new PublicError("请输入接单人", 400);
   const orders = [];
   const missing = [];
+  if (!candidates.length) return { ok: true, orders, missing };
   const records = new Map((await batchGetRecords(candidates.map((candidate) => text(candidate?.recordId)).filter(Boolean), env))
     .map((record) => [record.record_id, record]));
   for (const candidate of candidates) {
