@@ -344,8 +344,10 @@ async function releaseBatch(body, env) {
   for (const item of items) {
     try {
       const record = records.get(item.recordId);
-      if (!record) throw new PublicError("飞书记录不存在", 404);
-      assertLock(record, item.lockId, assignee, env);
+      if (!record || !ownsInProgress(record, item.lockId, assignee, env)) {
+        results.push({ recordId: item.recordId, ok: true, released: false, alreadyResolved: true });
+        continue;
+      }
       const running = await env.ORDER_DB.prepare("SELECT id FROM order_jobs WHERE record_id=? AND lock_id=? AND type='complete' AND status='processing' LIMIT 1").bind(item.recordId, item.lockId).first();
       if (running) throw new Error("视频正在转存，暂时不能释放");
       const fields = record.fields || {};
@@ -355,13 +357,20 @@ async function releaseBatch(body, env) {
         record_id: item.recordId,
         fields: releaseFields(fields, assignee, failCount, garbage, "用户在网页批量工作台释放任务", env),
       });
-      results.push({ recordId: item.recordId, ok: true });
+      results.push({ recordId: item.recordId, ok: true, released: true, alreadyResolved: false });
     } catch (error) {
       results.push({ recordId: item.recordId, ok: false, error: publicError(error) });
     }
   }
   if (updates.length) await batchUpdateRecords(updates, env);
-  return { ok: results.some((item) => item.ok), released: results.filter((item) => item.ok).length, failed: results.filter((item) => !item.ok).length, results };
+  return {
+    ok: results.some((item) => item.ok),
+    released: results.filter((item) => item.released).length,
+    cleared: results.filter((item) => item.ok).length,
+    alreadyResolved: results.filter((item) => item.alreadyResolved).length,
+    failed: results.filter((item) => !item.ok).length,
+    results,
+  };
 }
 
 async function releaseOrder(body, env) {
@@ -370,14 +379,16 @@ async function releaseOrder(body, env) {
   const assignee = text(body?.assignee);
   if (!recordId || !lockId) throw new PublicError("缺少 recordId 或 lockId", 400);
   const record = await getRecord(recordId, env);
-  assertLock(record, lockId, assignee, env);
+  if (!ownsInProgress(record, lockId, assignee, env)) {
+    return { ok: true, released: false, alreadyResolved: true };
+  }
   const running = await env.ORDER_DB.prepare("SELECT id FROM order_jobs WHERE record_id=? AND lock_id=? AND type='complete' AND status='processing' LIMIT 1").bind(recordId, lockId).first();
   if (running) throw new Error("视频正在转存，暂时不能释放");
   const fields = record.fields || {};
   const failCount = Number(fieldText(fields[field(env, "FAIL_COUNT", "失败次数")]) || 0) + 1;
   const garbage = failCount >= Number(env.MAX_FAIL_COUNT || 3);
   await updateRecord(recordId, releaseFields(fields, assignee, failCount, garbage, text(body?.reason) || "用户释放任务", env), env);
-  return { ok: true };
+  return { ok: true, released: true, alreadyResolved: false };
 }
 
 function releaseFields(fields, assignee, failCount, garbage, reason, env) {
@@ -659,6 +670,12 @@ function owns(record, lockId, assignee, env) {
   return fieldText(fields[field(env, "LOCK_ID", "接单锁ID")]) === lockId
     && fieldText(fields[field(env, "ASSIGNEE", "接单人")]) === assignee
     && [status(env, "IN_PROGRESS", "接单中"), status(env, "DONE", "已完成")].includes(fieldText(fields[field(env, "STATUS", "任务状态")]));
+}
+function ownsInProgress(record, lockId, assignee, env) {
+  const fields = record?.fields || {};
+  return fieldText(fields[field(env, "LOCK_ID", "接单锁ID")]) === lockId
+    && fieldText(fields[field(env, "ASSIGNEE", "接单人")]) === assignee
+    && fieldText(fields[field(env, "STATUS", "任务状态")]) === status(env, "IN_PROGRESS", "接单中");
 }
 function assertLock(record, lockId, assignee, env) {
   const fields = record.fields || {};

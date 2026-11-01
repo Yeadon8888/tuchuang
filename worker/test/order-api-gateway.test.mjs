@@ -104,6 +104,36 @@ test("releases a batch with one Feishu read and one Feishu write", async () => {
   assert.equal(recordWrites, 1);
 });
 
+test("clears stale browser cards without changing an order that was reassigned or completed", async () => {
+  const orders = [{ recordId: "rec-stale", lockId: "old-lock" }];
+  let recordWrites = 0;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("tenant_access_token")) return Response.json({ code: 0, tenant_access_token: "token", expire: 7200 });
+    if (url.endsWith("/records/batch_get")) {
+      return Response.json({ code: 0, data: { records: [{
+        record_id: "rec-stale",
+        fields: { 任务状态: "已完成", 接单人: "new-worker", 接单锁ID: "new-lock", 视频地址: "https://r2.test/done.mp4" },
+      }] } });
+    }
+    if (url.endsWith("/records/batch_update")) {
+      recordWrites += 1;
+      return Response.json({ code: 0, data: { records: [] } });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  };
+  const response = await worker.fetch(new Request("https://edge.example/order-api/api/order/release-batch", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ assignee: "old-worker", orders }),
+  }), createReleaseEnv());
+  const data = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(data.cleared, 1);
+  assert.equal(data.results[0].ok, true);
+  assert.equal(data.results[0].alreadyResolved, true);
+  assert.equal(recordWrites, 0);
+});
+
 test("recovers a completed Muse upload as completed instead of claimed", async () => {
   let recordReads = 0;
   globalThis.fetch = async (input) => {

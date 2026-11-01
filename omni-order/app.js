@@ -571,7 +571,7 @@ async function releaseOrder(recordId) {
     });
     if (!data.ok) throw new Error(data.error || "释放失败");
     state.orders = state.orders.filter((item) => item.recordId !== recordId);
-    saveState(); render(); showToast(`${shortId(recordId)} 已释放`);
+    saveState(); render(); showToast(data.alreadyResolved ? `${shortId(recordId)} 旧卡片已清理` : `${shortId(recordId)} 已释放`);
   } catch (error) {
     order.state = "error"; order.message = error.message || "释放失败"; saveState(); render();
   }
@@ -596,7 +596,9 @@ async function releaseAllUnsubmitted() {
       return true;
     });
     saveState(); render();
-    setDeck(`已释放 ${data.released || 0} 单${data.failed ? `，${data.failed} 单释放失败` : ""}。`, data.failed ? "warn" : "success");
+    const cleared = Number(data.cleared ?? data.released ?? 0);
+    const resolved = Number(data.alreadyResolved || 0);
+    setDeck(`已清理 ${cleared} 张卡片（实际释放 ${data.released || 0} 单${resolved ? `，${resolved} 张为已处理旧卡片` : ""}）${data.failed ? `，${data.failed} 单失败` : ""}。`, data.failed ? "warn" : "success");
   } catch (error) { setDeck(error.message || "批量释放失败", "error"); }
   finally { batchBusy = false; renderControls(); }
 }
