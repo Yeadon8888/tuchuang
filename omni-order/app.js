@@ -56,7 +56,6 @@ let serverOnline = false;
 let claimBusy = false;
 let batchBusy = false;
 let recoveryBusy = false;
-let lastRecoveryAt = 0;
 let toastTimer = 0;
 const pollers = new Map();
 const activeFileUploads = new Set();
@@ -80,10 +79,6 @@ function bootstrap() {
   } else if (state.assignee) {
     recoverOrders(true);
   }
-  window.addEventListener("focus", () => recoverWhenVisible());
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") recoverWhenVisible();
-  });
   window.addEventListener("storage", (event) => {
     if (event.key !== STATE_KEY) return;
     if (activeFileUploads.size) return;
@@ -92,11 +87,6 @@ function bootstrap() {
     els.quantity.value = String(state.quantity);
     render();
   });
-}
-
-function recoverWhenVisible() {
-  if (!state.assignee || recoveryBusy || Date.now() - lastRecoveryAt < 30_000) return;
-  recoverOrders(true);
 }
 
 function bindEvents() {
@@ -231,7 +221,6 @@ async function recoverOrders(silent = false) {
     return;
   }
   recoveryBusy = true;
-  lastRecoveryAt = Date.now();
   renderControls();
   if (!silent) setDeck("正在校验订单，通常需要几秒…", "warn");
   const waitingHint = setTimeout(() => {

@@ -92,6 +92,12 @@ test("recovery can rebuild cards by assignee when browser lock data is missing",
   assert.match(body, /mergeRecoveredOrders/);
 });
 
+test("returning from the file chooser does not trigger automatic recovery", () => {
+  const body = functionBody("bootstrap");
+  assert.doesNotMatch(body, /addEventListener\("focus"|visibilitychange/);
+  assert.match(body, /recoverOrders\(true\)/);
+});
+
 test("recovery retires a stale processing card when the backend no longer owns its lock", async () => {
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
   const state = { assignee: "worker", orders: [{ recordId: "stale", lockId: "old-lock", state: "processing" }] };
