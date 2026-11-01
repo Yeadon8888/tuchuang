@@ -99,7 +99,7 @@ test("recovery retires a stale processing card when the backend no longer owns i
   const run = new AsyncFunction(
     "silent", "state", "activeOrders", "api", "mergeRecoveredOrders", "clearPendingClaim", "saveState", "render",
     "startPendingPollers", "renderControls", "setDeck", "showToast", "els", "MAX_ACTIVE_ORDERS", "setTimeout", "clearTimeout",
-    `let recoveryBusy = false; let lastRecoveryAt = 0; ${functionBody("recoverOrders")}`,
+    `let recoveryBusy = false; let lastRecoveryAt = 0; const activeFileUploads = new Set(); ${functionBody("recoverOrders")}`,
   );
   await run(
     false,
@@ -118,6 +118,37 @@ test("recovery retires a stale processing card when the backend no longer owns i
   );
   assert.deepEqual(calls, ["/api/order/recover", "/api/order/recover-by-assignee"], "local lock reconciliation must run before assignee recovery");
   assert.deepEqual(state.orders, []);
+});
+
+test("upload survives concurrent recovery and completes only after confirmed writeback", async () => {
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const state = { assignee: "worker", orders: [{ recordId: "r1", lockId: "l1", state: "claimed" }] };
+  const activeFileUploads = new Set();
+  const findOrder = (id) => state.orders.find((item) => item.recordId === id);
+  const merge = new Function("state", "activeFileUploads", "normalizeOrder", "recoveredOrders", "missing", functionBody("mergeRecoveredOrders"));
+  let finishUpload;
+  const pendingUpload = new Promise((resolve) => { finishUpload = resolve; });
+  let finishWriteback;
+  const pendingWriteback = new Promise((resolve) => { finishWriteback = resolve; });
+  const api = async (path) => path.endsWith("/prepare") ? { ok: true, ticket: "ticket" } : pendingWriteback;
+  const noop = () => {};
+  const finalize = new AsyncFunction("recordId", "findOrder", "activeFileUploads", "saveState", "updateOrderCard", "api", "showToast", "shortId", functionBody("finalizeOrderFile"));
+  const upload = new AsyncFunction("recordId", "file", "findOrder", "activeFileUploads", "MAX_ORDER_FILE_BYTES", "saveState", "updateOrderCard", "api", "state", "putOrderFile", "normalizeHttpUrl", "finalizeOrderFile", functionBody("uploadOrderFile"));
+  const task = upload("r1", { name: "muse.mp4", type: "video/mp4", size: 4 }, findOrder, activeFileUploads, 1000, noop, noop, api, state, () => pendingUpload, String, (id) => finalize(id, findOrder, activeFileUploads, noop, noop, api, noop, String));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(findOrder("r1").state, "uploading");
+  const original = findOrder("r1");
+  merge(state, activeFileUploads, (x) => x, [{ recordId: "r1", lockId: "l1", state: "claimed", message: "已恢复接单状态" }], false);
+  assert.equal(findOrder("r1"), original);
+  assert.equal(original.state, "uploading");
+  finishUpload({ videoUrl: "https://r2.test/video.mp4" });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(findOrder("r1").state, "submitting");
+  assert.equal(findOrder("r1").fileUploadTicket, "ticket");
+  finishWriteback({ ok: true, status: "completed", videoUrl: "https://r2.test/video.mp4" });
+  await task;
+  assert.equal(findOrder("r1").state, "completed");
+  assert.equal(activeFileUploads.size, 0);
 });
 
 test("Doubao submission continues when Cloudflare cannot extract fallback_api", async () => {

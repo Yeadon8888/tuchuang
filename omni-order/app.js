@@ -59,6 +59,7 @@ let recoveryBusy = false;
 let lastRecoveryAt = 0;
 let toastTimer = 0;
 const pollers = new Map();
+const activeFileUploads = new Set();
 
 bootstrap();
 
@@ -85,6 +86,7 @@ function bootstrap() {
   });
   window.addEventListener("storage", (event) => {
     if (event.key !== STATE_KEY) return;
+    if (activeFileUploads.size) return;
     state = loadState();
     els.assignee.value = state.assignee;
     els.quantity.value = String(state.quantity);
@@ -248,7 +250,7 @@ async function recoverOrders(silent = false) {
     const localRecovered = localData?.orders || [];
     const localRecoveredIds = new Set(localRecovered.map((order) => String(order.recordId || "")));
     const definitiveMissing = new Set((localData?.missing || [])
-      .filter((item) => item && !item.retryable && !localRecoveredIds.has(String(item.recordId || "")))
+      .filter((item) => item && !item.retryable && !activeFileUploads.has(String(item.recordId || "")) && !state.orders.some((order) => order.recordId === String(item.recordId || "") && order.state === "completed") && !localRecoveredIds.has(String(item.recordId || "")))
       .map((item) => String(item.recordId || "")));
     mergeRecoveredOrders(localRecovered, definitiveMissing);
     if (definitiveMissing.size) {
@@ -287,6 +289,7 @@ function mergeRecoveredOrders(recoveredOrders, missing = false) {
   const recoveredById = new Map(recoveredOrders.map((order) => [order.recordId, order]));
   const existingIds = new Set(state.orders.map((order) => order.recordId));
   state.orders = state.orders.map((local) => {
+    if (activeFileUploads.has(local.recordId)) return local;
     if (["completed", "lost"].includes(local.state)) return local;
     const recovered = recoveredById.get(local.recordId);
     const shouldMarkMissing = missing === true
@@ -376,6 +379,7 @@ async function uploadOrderFile(recordId, file) {
     order.state = "error"; order.message = "视频文件不能超过 100MB"; saveState(); updateOrderCard(recordId); return;
   }
 
+  activeFileUploads.add(recordId);
   order.state = "submitting";
   order.deliveryMode = "file";
   order.fileUploadName = file.name;
@@ -414,6 +418,8 @@ async function uploadOrderFile(recordId, file) {
     order.state = "error";
     order.message = error.message || "视频上传失败，可重新选择文件重试";
     saveState(); updateOrderCard(recordId);
+  } finally {
+    activeFileUploads.delete(recordId);
   }
 }
 
@@ -446,6 +452,8 @@ function putOrderFile(ticket, file, onProgress) {
 async function finalizeOrderFile(recordId) {
   const order = findOrder(recordId);
   if (!order?.fileUploadTicket || !order.fileUploadUploaded) return;
+  const alreadyProtected = activeFileUploads.has(recordId);
+  activeFileUploads.add(recordId);
   order.state = "submitting";
   order.message = "正在验证 R2 视频并回填飞书";
   saveState(); updateOrderCard(recordId);
@@ -467,6 +475,8 @@ async function finalizeOrderFile(recordId) {
     order.state = "error";
     order.message = `${error.message || "飞书回填失败"}；视频已上传，可直接重试回填`;
     saveState(); updateOrderCard(recordId);
+  } finally {
+    if (!alreadyProtected) activeFileUploads.delete(recordId);
   }
 }
 
