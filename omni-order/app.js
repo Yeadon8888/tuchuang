@@ -104,6 +104,7 @@ function bindEvents() {
   els.assignee.addEventListener("change", () => {
     state.assignee = els.assignee.value.trim();
     saveState();
+    renderControls();
   });
   els.quantity.addEventListener("change", () => {
     state.quantity = normalizeBatchSize(els.quantity.value);
