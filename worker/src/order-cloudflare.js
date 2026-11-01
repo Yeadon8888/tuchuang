@@ -378,7 +378,7 @@ async function releaseOrder(body, env) {
   const lockId = text(body?.lockId);
   const assignee = text(body?.assignee);
   if (!recordId || !lockId) throw new PublicError("缺少 recordId 或 lockId", 400);
-  const record = await getRecord(recordId, env);
+  const [record] = await batchGetRecords([recordId], env);
   if (!ownsInProgress(record, lockId, assignee, env)) {
     return { ok: true, released: false, alreadyResolved: true };
   }
