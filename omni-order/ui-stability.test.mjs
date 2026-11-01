@@ -92,6 +92,34 @@ test("recovery can rebuild cards by assignee when browser lock data is missing",
   assert.match(body, /mergeRecoveredOrders/);
 });
 
+test("recovery retires a stale processing card when the backend no longer owns its lock", async () => {
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const state = { assignee: "worker", orders: [{ recordId: "stale", lockId: "old-lock", state: "processing" }] };
+  const calls = [];
+  const run = new AsyncFunction(
+    "silent", "state", "activeOrders", "api", "mergeRecoveredOrders", "clearPendingClaim", "saveState", "render",
+    "startPendingPollers", "renderControls", "setDeck", "showToast", "els", "MAX_ACTIVE_ORDERS", "setTimeout", "clearTimeout",
+    `let recoveryBusy = false; let lastRecoveryAt = 0; ${functionBody("recoverOrders")}`,
+  );
+  await run(
+    false,
+    state,
+    () => state.orders.filter((order) => !["completed", "lost"].includes(order.state)),
+    async (path) => {
+      calls.push(path);
+      if (path.endsWith("recover-by-assignee")) return { ok: true, orders: [] };
+      if (path.endsWith("/recover")) return { ok: true, orders: [], missing: [{ recordId: "stale", retryable: false }] };
+      throw new Error(`unexpected API ${path}`);
+    },
+    (_orders, missing) => {
+      if (missing instanceof Set && missing.has("stale")) state.orders[0].state = "lost";
+    },
+    () => {}, () => {}, () => {}, () => {}, () => {}, () => {}, () => {}, {}, 100, setTimeout, clearTimeout,
+  );
+  assert.deepEqual(calls, ["/api/order/recover", "/api/order/recover-by-assignee"], "local lock reconciliation must run before assignee recovery");
+  assert.deepEqual(state.orders, []);
+});
+
 test("Doubao submission continues when Cloudflare cannot extract fallback_api", async () => {
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
   const resolveDoubaoFallback = new AsyncFunction("shareUrl", "RESOLVER", "fetch", functionBody("resolveDoubaoFallback"));

@@ -56,6 +56,7 @@ let serverOnline = false;
 let claimBusy = false;
 let batchBusy = false;
 let recoveryBusy = false;
+let lastRecoveryAt = 0;
 let toastTimer = 0;
 const pollers = new Map();
 
@@ -78,6 +79,22 @@ function bootstrap() {
   } else if (state.assignee) {
     recoverOrders(true);
   }
+  window.addEventListener("focus", () => recoverWhenVisible());
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") recoverWhenVisible();
+  });
+  window.addEventListener("storage", (event) => {
+    if (event.key !== STATE_KEY) return;
+    state = loadState();
+    els.assignee.value = state.assignee;
+    els.quantity.value = String(state.quantity);
+    render();
+  });
+}
+
+function recoverWhenVisible() {
+  if (!state.assignee || recoveryBusy || Date.now() - lastRecoveryAt < 30_000) return;
+  recoverOrders(true);
 }
 
 function bindEvents() {
@@ -211,33 +228,52 @@ async function recoverOrders(silent = false) {
     return;
   }
   recoveryBusy = true;
+  lastRecoveryAt = Date.now();
   renderControls();
   if (!silent) setDeck("正在校验订单，通常需要几秒…", "warn");
   const waitingHint = setTimeout(() => {
     if (!silent) setDeck("飞书查询较慢，仍在等待结果；可以继续填写其他卡片。", "warn");
   }, 5000);
   try {
+    let localData = candidates.length ? null : { ok: true, orders: [], missing: [] };
+    let localError;
+    if (candidates.length) {
+      try {
+        localData = await api("/api/order/recover", { assignee: state.assignee, orders: candidates }, 60000);
+      } catch (error) {
+        localError = error;
+        localData = null;
+      }
+    }
+    const localRecovered = localData?.orders || [];
+    const localRecoveredIds = new Set(localRecovered.map((order) => String(order.recordId || "")));
+    const definitiveMissing = new Set((localData?.missing || [])
+      .filter((item) => item && !item.retryable && !localRecoveredIds.has(String(item.recordId || "")))
+      .map((item) => String(item.recordId || "")));
+    mergeRecoveredOrders(localRecovered, definitiveMissing);
+    if (definitiveMissing.size) {
+      state.orders = state.orders.filter((order) => !definitiveMissing.has(order.recordId));
+      saveState();
+      render();
+      if (!silent) showToast(`已自动清理 ${definitiveMissing.size} 张失效旧卡片`);
+    }
+
     let assigneeData;
-    let localData;
     try {
       assigneeData = await api("/api/order/recover-by-assignee", { assignee: state.assignee, limit: MAX_ACTIVE_ORDERS }, 60000);
     } catch (assigneeError) {
-      if (!candidates.length) throw assigneeError;
-      localData = await api("/api/order/recover", { assignee: state.assignee, orders: candidates }, 60000);
+      if (!localData?.ok) throw (localError || assigneeError);
     }
     const recoveredById = new Map();
-    for (const order of [...(assigneeData?.orders || []), ...(localData?.orders || [])]) {
+    for (const order of [...localRecovered, ...(assigneeData?.orders || [])]) {
       if (order.recordId) recoveredById.set(order.recordId, order);
     }
-    const definitiveMissing = new Set((localData?.missing || [])
-      .filter((item) => item && !item.retryable)
-      .map((item) => String(item.recordId || '')));
-    mergeRecoveredOrders([...recoveredById.values()], definitiveMissing);
+    mergeRecoveredOrders([...recoveredById.values()]);
     clearPendingClaim();
     saveState();
     render();
     startPendingPollers();
-    if (!silent) setDeck(`恢复完成：${recoveredById.size} 个有效订单。`, "success");
+    if (!silent) setDeck(`恢复完成：${recoveredById.size} 个有效订单${definitiveMissing.size ? `，已清理 ${definitiveMissing.size} 张失效旧卡片` : ""}。`, "success");
   } catch (error) {
     if (!silent) setDeck(error.message || "恢复订单失败", "error");
   } finally {
