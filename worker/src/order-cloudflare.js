@@ -95,13 +95,22 @@ async function startClaimJob(body, env) {
     const existing = await env.ORDER_DB.prepare("SELECT * FROM order_jobs WHERE request_id = ?").bind(requestId).first();
     if (existing) return publicJob(existing);
   }
+  const running = await env.ORDER_DB.prepare("SELECT * FROM order_jobs WHERE type='claim' AND assignee=? AND status='processing' LIMIT 1").bind(assignee).first();
+  if (running) return publicJob(running);
   const now = Date.now();
   const jobId = crypto.randomUUID();
-  await env.ORDER_DB.prepare(`INSERT INTO order_jobs
+  try {
+    await env.ORDER_DB.prepare(`INSERT INTO order_jobs
     (id,type,status,assignee,request_id,payload,result,message,created_at,updated_at,expires_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
     .bind(jobId, "claim", "processing", assignee, requestId || null,
       JSON.stringify({ assignee, requested, rowNumbers }), "{}", "正在从飞书任务池接单", now, now, now + JOB_TTL_MS).run();
+  } catch (error) {
+    const existing = requestId ? await env.ORDER_DB.prepare("SELECT * FROM order_jobs WHERE request_id=?").bind(requestId).first() : null;
+    const concurrent = existing || await env.ORDER_DB.prepare("SELECT * FROM order_jobs WHERE type='claim' AND assignee=? AND status='processing' LIMIT 1").bind(assignee).first();
+    if (concurrent) return publicJob(concurrent);
+    throw error;
+  }
   await env.ORDER_JOBS.send({ kind: "claim", jobId });
   return publicJob(await jobRow(jobId, env));
 }
@@ -111,17 +120,55 @@ async function runClaimJob(jobId, env) {
   if (!job || job.status !== "processing") return;
   const payload = parseJson(job.payload);
   try {
-    const result = await withClaimLease(env, () => performClaim(payload, env, async (claimed) => {
-      await updateJobProgress(jobId, claimed, payload.requested, env);
-    }));
-    await finishJob(jobId, result.ok ? "completed" : "failed", result, result.ok ? `接单完成：成功 ${result.claimed} 单` : result.error, result.error, env);
+    await withClaimLease(env, async () => {
+      const current = await jobRow(jobId, env);
+      if (!current || current.status !== "processing") return;
+      const progress = parseJson(current.result);
+      const orders = progress.orders || [];
+      const held = await listAssigneeOrders(payload.assignee, env);
+      let targets = progress.targets;
+      if (!targets) {
+        const pending = (await listPendingRecords(env)).filter((record) => fieldText(record.fields?.[field(env, "STATUS", "任务状态")]) === status(env, "PENDING", "待接单"));
+        const rows = payload.rowNumbers?.length ? payload.rowNumbers : Array.from({ length: payload.requested }, (_, i) => i + 1);
+        targets = rows.map((rowNumber) => ({ recordId: pending[rowNumber - 1]?.record_id, rowNumber })).filter((item) => item.recordId);
+      }
+      let cursor = Number(progress.cursor || 0);
+      const checkpoint = async () => {
+        await env.ORDER_DB.prepare("UPDATE order_jobs SET result=?,message=?,updated_at=? WHERE id=? AND status='processing'")
+          .bind(JSON.stringify({ requested: payload.requested, claimed: orders.length, orders, targets, cursor }), `后台正在接单：已确认 ${orders.length}/${payload.requested} 单`, Date.now(), jobId).run();
+      };
+      await checkpoint();
+      // One immutable target per delivery; retries resume this target rather than selecting a new batch.
+      if (cursor < targets.length && orders.length < payload.requested) {
+        const target = targets[cursor];
+        const record = await getRecord(target.recordId, env);
+        const lockId = `${jobId}:${target.recordId}`;
+        if (ownsInProgress(record, lockId, payload.assignee, env)) {
+          if (!orders.some((order) => order.recordId === target.recordId)) orders.push(buildOrder(record, payload.assignee, target.rowNumber, env));
+        } else if (held.length < MAX_BATCH && fieldText(record.fields?.[field(env, "STATUS", "任务状态")]) === status(env, "PENDING", "待接单")) {
+          orders.push(await claimRecord(record, payload.assignee, target.rowNumber, env, payload.platform, lockId));
+        }
+        cursor += 1;
+        await checkpoint();
+      }
+      if (cursor < targets.length && orders.length < payload.requested && held.length < MAX_BATCH) {
+        await env.ORDER_JOBS.send({ kind: "claim", jobId });
+        return;
+      }
+      const error = orders.length < payload.requested ? (held.length >= MAX_BATCH ? "已达到每人最多持有 100 单的上限" : "当前可领取任务不足或部分任务已被领取") : "";
+      const result = { requested: payload.requested, claimed: orders.length, orders, partial: orders.length < payload.requested, error };
+      await finishJob(jobId, orders.length ? "completed" : "failed", result, `接单结束：成功 ${orders.length} 单`, error, env);
+    });
   } catch (error) {
-    await finishJob(jobId, "failed", {}, publicError(error), publicError(error), env);
+    const current = await jobRow(jobId, env);
+    if (current?.status === "processing") await finishJob(jobId, "failed", parseJson(current.result), publicError(error), publicError(error), env);
     throw error;
   }
 }
 
 async function performClaim(payload, env, onProgress = async () => {}) {
+  const held = await listAssigneeOrders(payload.assignee, env);
+  if (held.length + payload.requested > MAX_BATCH) throw new PublicError(`当前已持有 ${held.length} 单，每人最多持有 ${MAX_BATCH} 单，请先完成或释放订单`, 409);
   const records = (await listPendingRecords(env)).filter((record) => fieldText(record.fields?.[field(env, "STATUS", "任务状态")]) === status(env, "PENDING", "待接单"));
   const requestedRows = payload.rowNumbers || [];
   const entries = requestedRows.length
@@ -157,10 +204,10 @@ async function claimOneNow(body, env) {
   return result.orders[0];
 }
 
-async function claimRecord(record, assignee, rowNumber, env, platform = "") {
+async function claimRecord(record, assignee, rowNumber, env, platform = "", claimLockId = "") {
   const fields = record.fields || {};
   if (fieldText(fields[field(env, "STATUS", "任务状态")]) !== status(env, "PENDING", "待接单")) throw new Error("任务已被其他人领取");
-  const lockId = crypto.randomUUID();
+  const lockId = claimLockId || crypto.randomUUID();
   const next = {
     [field(env, "STATUS", "任务状态")]: status(env, "IN_PROGRESS", "接单中"),
     [field(env, "ASSIGNEE", "接单人")]: assignee,
@@ -223,6 +270,11 @@ async function recoverByAssignee(body, env) {
   const orders = [];
   for (const record of owned.slice(-limit)) orders.push(await buildRecoveredOrder(record, assignee, env));
   return { ok: true, orders, recovered: orders.length };
+}
+
+async function listAssigneeOrders(assignee, env) {
+  const filter = `AND(CurrentValue.[${field(env, "ASSIGNEE", "接单人")}]="${escapeFilter(assignee)}",CurrentValue.[${field(env, "STATUS", "任务状态")}]="${escapeFilter(status(env, "IN_PROGRESS", "接单中"))}")`;
+  return (await listRecords(env, { filter })).filter((record) => fieldText(record.fields?.[field(env, "ASSIGNEE", "接单人")]) === assignee && fieldText(record.fields?.[field(env, "STATUS", "任务状态")]) === status(env, "IN_PROGRESS", "接单中"));
 }
 
 async function buildRecoveredOrder(record, assignee, env) {
@@ -640,9 +692,6 @@ function publicJob(row) {
   };
 }
 
-async function updateJobProgress(id, claimed, requested, env) {
-  await env.ORDER_DB.prepare("UPDATE order_jobs SET result=?,message=?,updated_at=? WHERE id=?").bind(JSON.stringify({ claimed, requested }), `后台正在接单：已确认 ${claimed}/${requested} 单`, Date.now(), id).run();
-}
 async function setJobMessage(id, message, env) { await env.ORDER_DB.prepare("UPDATE order_jobs SET message=?,updated_at=? WHERE id=?").bind(message, Date.now(), id).run(); }
 async function finishJob(id, statusValue, result, message, error, env) { await env.ORDER_DB.prepare("UPDATE order_jobs SET status=?,result=?,message=?,error=?,updated_at=? WHERE id=?").bind(statusValue, JSON.stringify(result || {}), message || "", error || "", Date.now(), id).run(); }
 
