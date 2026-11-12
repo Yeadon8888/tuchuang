@@ -13,6 +13,8 @@ const statusBanner = document.getElementById("status-banner");
 const dropZone = document.getElementById("drop-zone");
 const fileInput = document.getElementById("file-input");
 const pickBtn = document.getElementById("pick-btn");
+const folderInput = document.getElementById("folder-input");
+const pickFolderBtn = document.getElementById("pick-folder-btn");
 const progressArea = document.getElementById("progress-area");
 const progressBar = document.getElementById("progress-bar");
 const progressText = document.getElementById("progress-text");
@@ -36,6 +38,8 @@ const flowImportStatus = document.getElementById("flow-import-status");
 
 const uploadedUrls = [];
 const UPLOAD_MAX_ATTEMPTS = 3;
+const pendingUploads = [];
+let uploadQueueRunning = false;
 let activeApi = API_CANDIDATES[0];
 let apiFeatures = {
   video: true,
@@ -106,15 +110,32 @@ pickBtn.addEventListener("click", (event) => {
   fileInput.click();
 });
 
-dropZone.addEventListener("click", () => fileInput.click());
+pickFolderBtn.addEventListener("click", (event) => {
+  event.stopPropagation();
+  folderInput.click();
+});
+fileInput.addEventListener("click", (event) => event.stopPropagation());
+folderInput.addEventListener("click", (event) => event.stopPropagation());
+dropZone.addEventListener("click", (event) => {
+  if (!event.target.closest("button, input, label, select, a")) fileInput.click();
+});
 dropZone.addEventListener("keydown", (event) => {
+  if (event.target !== dropZone) return;
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
     fileInput.click();
   }
 });
 
-fileInput.addEventListener("change", () => handleFiles(fileInput.files));
+fileInput.addEventListener("change", () => {
+  handleFiles(fileInput.files);
+  fileInput.value = "";
+});
+folderInput.addEventListener("change", () => {
+  const files = Array.from(folderInput.files).sort((a, b) => a.webkitRelativePath.localeCompare(b.webkitRelativePath, undefined, { numeric: true }));
+  handleFiles(files);
+  folderInput.value = "";
+});
 
 dropZone.addEventListener("dragover", (event) => {
   event.preventDefault();
@@ -268,7 +289,7 @@ function setFlowImportStatus(message, state = "") {
   flowImportStatus.className = `flow-import-status${state ? ` ${state}` : ""}`;
 }
 
-async function uploadFile(file, uploadId) {
+async function uploadFile(file, uploadId, storagePolicy = getUploadStoragePolicy()) {
   let res;
   try {
     res = await apiFetch("/upload", {
@@ -277,7 +298,7 @@ async function uploadFile(file, uploadId) {
       bodyFactory() {
         const form = new FormData();
         form.append("file", file, file.name || defaultFileName(file));
-        form.append("storagePolicy", getUploadStoragePolicy());
+        form.append("storagePolicy", storagePolicy);
         form.append("uploadId", uploadId);
         return form;
       },
@@ -291,12 +312,12 @@ async function uploadFile(file, uploadId) {
   return readApiResponse(res);
 }
 
-async function uploadFileWithRetry(file, onRetry) {
+async function uploadFileWithRetry(file, onRetry, storagePolicy) {
   const uploadId = createUploadId();
   let lastError;
   for (let attempt = 1; attempt <= UPLOAD_MAX_ATTEMPTS; attempt += 1) {
     try {
-      return await uploadFile(file, uploadId);
+      return await uploadFile(file, uploadId, storagePolicy);
     } catch (error) {
       lastError = error;
       if (!error.retryable || attempt === UPLOAD_MAX_ATTEMPTS) break;
@@ -318,38 +339,48 @@ async function handleFiles(fileList) {
   const files = incoming.filter(isSupportedFile);
 
   if (!files.length) {
-    addError("未找到可上传文件", "请选择图片或视频文件");
+    addError("未找到可上传文件", "所选内容没有图片或视频，其他类型已跳过");
     return;
   }
 
+  const storagePolicy = getUploadStoragePolicy();
+  pendingUploads.push(...files.map((file) => ({ file, storagePolicy })));
+  if (incoming.length > files.length) addError("已跳过非图片/视频文件", `已跳过 ${incoming.length - files.length} 个文件，${files.length} 个文件已加入上传队列`);
+  if (uploadQueueRunning) return;
+  uploadQueueRunning = true;
   progressArea.classList.remove("hidden");
   progressBar.style.width = "0%";
   progressText.textContent = `准备上传 ${files.length} 个文件`;
 
   let successCount = 0;
+  let completed = 0;
 
-  for (let i = 0; i < files.length; i += 1) {
-    const file = files[i];
-    progressText.textContent = `上传中 ${i + 1} / ${files.length}：${file.name || "未命名文件"}`;
-    progressBar.style.width = `${Math.round((i / files.length) * 100)}%`;
+  try {
+  while (pendingUploads.length) {
+    const { file, storagePolicy: policy } = pendingUploads.shift();
+    const total = completed + 1 + pendingUploads.length;
+    progressText.textContent = `上传中 ${completed + 1} / ${total}：${file.webkitRelativePath || file.name || "未命名文件"}`;
+    progressBar.style.width = `${Math.round((completed / total) * 100)}%`;
 
     try {
       const data = await uploadFileWithRetry(file, (attempt, maxAttempts) => {
         progressText.textContent = `连接中断，正在重试 ${attempt} / ${maxAttempts}：${file.name || "未命名文件"}`;
-      });
+      }, policy);
       addResult(file, data);
       successCount += 1;
     } catch (error) {
       addError(file.name || "未命名文件", error.message);
     }
 
-    progressBar.style.width = `${Math.round(((i + 1) / files.length) * 100)}%`;
+    completed += 1;
+    progressBar.style.width = `${Math.round((completed / (completed + pendingUploads.length)) * 100)}%`;
   }
 
-  progressText.textContent = `完成：成功 ${successCount} 个，失败 ${files.length - successCount} 个`;
-  setTimeout(() => progressArea.classList.add("hidden"), 2400);
-  fileInput.value = "";
+  progressText.textContent = `完成：成功 ${successCount} 个，失败 ${completed - successCount} 个`;
   if (successCount && apiFeatures.records) loadRecords();
+  } finally {
+    uploadQueueRunning = false;
+  }
 }
 
 async function loadRecords() {
