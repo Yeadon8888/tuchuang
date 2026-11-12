@@ -283,12 +283,13 @@ async function uploadFile(request, env, url) {
   const originalName = sanitizeName(file.name || (kind === "video" ? "video" : "image"));
   const storagePolicy = getStoragePolicy(formData.get("storagePolicy"));
   const uploadId = getUploadId(formData.get("uploadId"));
-  const key = buildObjectKey(originalName, contentType, storagePolicy, uploadId);
+  let key;
   const uploadedAt = new Date().toISOString();
   const body = await file.arrayBuffer();
+  let stored;
 
   try {
-    await putObjectWithRetry(env.IMAGES, key, body, {
+    stored = await putNamedFile(env.IMAGES, originalName, storagePolicy, uploadId || crypto.randomUUID(), body, {
       httpMetadata: { contentType },
       customMetadata: {
         originalName,
@@ -297,6 +298,7 @@ async function uploadFile(request, env, url) {
         storagePolicy,
       },
     });
+    key = stored.key;
   } catch (error) {
     console.error("R2 upload failed", {
       key,
@@ -312,9 +314,9 @@ async function uploadFile(request, env, url) {
   const item = buildFileItem(url.origin, {
     key,
     size: file.size,
-    uploaded: new Date(uploadedAt),
+    uploaded: stored.uploaded || new Date(uploadedAt),
     contentType,
-    customMetadata: { originalName, kind, uploadedAt, storagePolicy },
+    customMetadata: stored.customMetadata || { originalName: key.split('/').pop(), kind, uploadedAt, storagePolicy },
   }, getRetentionDays(env));
 
   return json(item);
@@ -553,6 +555,42 @@ function buildObjectKey(originalName, contentType, storagePolicy, uploadId = "")
   return `${prefix}${objectId}.${extension}`;
 }
 
+async function putNamedFile(bucket, originalName, policy, uploadId, body, options) {
+  const prefix = policy === "permanent" ? PERMANENT_PREFIX : TEMPORARY_PREFIX;
+  const dot = originalName.lastIndexOf('.');
+  const stem = dot > 0 ? originalName.slice(0, dot) : originalName;
+  const extension = dot > 0 ? originalName.slice(dot) : '';
+  for (let suffix = 0; suffix < 10000; suffix++) {
+    const name = `${stem}${suffix ? `(${suffix})` : ''}${extension}`;
+    const key = `${prefix}${name}`;
+    let lastError;
+    for (let attempt = 0; attempt < R2_WRITE_ATTEMPTS; attempt++) {
+      try {
+        const existing = await bucket.head(key);
+        if (existing) {
+          if (existing.customMetadata?.uploadId === uploadId) return existing;
+          lastError = null;
+          break;
+        }
+        const stored = await bucket.put(key, body, {
+          ...options,
+          onlyIf: new Headers({ 'If-None-Match': '*' }),
+          customMetadata: { ...options.customMetadata, originalName: name, uploadId },
+        });
+        if (stored) return stored;
+        // Another uploader won this name; recheck to recognize a retry of our own request.
+        const winner = await bucket.head(key);
+        if (winner?.customMetadata?.uploadId === uploadId) return winner;
+        if (!winner) throw new Error('R2 did not confirm the upload');
+        lastError = null;
+        break;
+      } catch (error) { lastError = error; }
+    }
+    if (lastError) throw lastError;
+  }
+  throw new Error('同名文件过多，请修改文件名后重试');
+}
+
 async function putObjectWithRetry(bucket, key, body, options) {
   let lastError;
   for (let attempt = 1; attempt <= R2_WRITE_ATTEMPTS; attempt += 1) {
@@ -596,10 +634,11 @@ function buildFileItem(origin, object, retentionDays) {
 }
 
 function getObjectTime(object) {
+  if (object.uploaded) return new Date(object.uploaded);
+  if (object.customMetadata?.uploadedAt) return new Date(object.customMetadata.uploadedAt);
   const fromKey = object.key.match(/(?:^|\/)(\d{13})-/)?.[1];
   if (fromKey) return new Date(Number(fromKey));
-  if (object.customMetadata?.uploadedAt) return new Date(object.customMetadata.uploadedAt);
-  return object.uploaded ? new Date(object.uploaded) : new Date(0);
+  return new Date(0);
 }
 
 async function listRecordObjects(env, policy) {
@@ -746,7 +785,11 @@ function guessContentType(key) {
 }
 
 function sanitizeName(name) {
-  return name.replace(/[^\w.\-()\u4e00-\u9fa5 ]+/g, "_").slice(0, 120);
+  const safe = String(name).normalize('NFC').replace(/[\x00-\x1f\x7f/\\]/g, '_').trim();
+  if (!safe || /^\.+$/.test(safe)) return 'unnamed';
+  const dot = safe.lastIndexOf('.');
+  const extension = dot > 0 ? safe.slice(dot).slice(0, 20) : '';
+  return `${(dot > 0 ? safe.slice(0, dot) : safe).slice(0, 120)}${extension}`;
 }
 
 function getRetentionDays(env) {

@@ -87,7 +87,7 @@ test("retries a transient R2 error when uploading a file", async () => {
   assert.equal(attempts, 2);
   const result = await response.json();
   assert.equal(result.storagePolicy, "permanent");
-  assert.equal(result.key, "permanent/1790664000000-a1b2c3d4.mp4");
+  assert.equal(result.key, "permanent/clip.mp4");
 });
 
 test("returns a retryable CORS error when R2 upload keeps failing", async () => {
