@@ -24,6 +24,11 @@ const copyAllBtn = document.getElementById("copy-all-btn");
 const clearResultsBtn = document.getElementById("clear-results-btn");
 const refreshRecordsBtn = document.getElementById("refresh-records-btn");
 const recordFilter = document.getElementById("record-filter");
+const copyRecentForm = document.getElementById("copy-recent-form");
+const copyRecentCount = document.getElementById("copy-recent-count");
+const copyRecentBtn = document.getElementById("copy-recent-btn");
+const copyRecentStatus = document.getElementById("copy-recent-status");
+const copyRecentFallback = document.getElementById("copy-recent-fallback");
 const flowImportForm = document.getElementById("flow-import-form");
 const flowUrlInput = document.getElementById("flow-url-input");
 const flowImportBtn = document.getElementById("flow-import-btn");
@@ -149,6 +154,50 @@ clearResultsBtn.addEventListener("click", () => {
 
 refreshRecordsBtn.addEventListener("click", () => loadRecords());
 recordFilter.addEventListener("change", () => loadRecords());
+copyRecentForm.addEventListener("submit", copyRecentLinks);
+
+async function copyRecentLinks(event) {
+  event.preventDefault();
+  if (copyRecentBtn.disabled) return;
+  const count = Number(copyRecentCount.value);
+  if (!Number.isInteger(count) || count < 1 || count > 500) {
+    copyRecentStatus.textContent = "请输入 1–500 之间的整数。";
+    return;
+  }
+  if (!getToken()) return showAuth("请先输入访问码");
+  const scope = recordFilter.value;
+  const scopeText = { all: "全部", temporary: "短期", permanent: "长期" }[scope] || "全部";
+  copyRecentBtn.disabled = true;
+  copyRecentBtn.textContent = "正在读取…";
+  copyRecentFallback.classList.add("hidden");
+  copyRecentStatus.textContent = `正在读取最近 ${count} 条${scopeText}记录…`;
+  try {
+    const params = new URLSearchParams({ limit: String(count), storagePolicy: scope, linksOnly: "1" });
+    const response = await apiFetch(`/files?${params}`, { headers: { "X-Auth-Code": getToken() } });
+    const data = await readApiResponse(response);
+    const urls = (data.files || []).map((file) => file.url).filter(Boolean);
+    if (!urls.length) {
+      copyRecentStatus.textContent = `暂无${scopeText}记录可复制。`;
+      return;
+    }
+    const text = urls.join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      copyRecentStatus.textContent = `已复制最近 ${urls.length} 条${scopeText}记录的 URL${urls.length < count ? `（当前仅有 ${urls.length} 条）` : ""}，每条一行。`;
+    } catch {
+      copyRecentFallback.value = text;
+      copyRecentFallback.classList.remove("hidden");
+      copyRecentFallback.focus();
+      copyRecentFallback.select();
+      copyRecentStatus.textContent = `浏览器未允许自动复制。已选中 ${urls.length} 条链接，请按 Ctrl+C（Mac：Cmd+C）复制。`;
+    }
+  } catch (error) {
+    copyRecentStatus.textContent = `批量复制失败：${error.message}`;
+  } finally {
+    copyRecentBtn.disabled = false;
+    copyRecentBtn.textContent = "批量复制";
+  }
+}
 
 flowImportForm.addEventListener("submit", async (event) => {
   event.preventDefault();

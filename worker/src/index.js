@@ -416,12 +416,20 @@ async function listFiles(request, env, url) {
     return json({ error: "认证失败" }, 401);
   }
 
-  const limit = Math.min(Number.parseInt(url.searchParams.get("limit") || "60", 10) || 60, 100);
+  const requestedLimit = Number(url.searchParams.get("limit") || "60");
+  if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 500) {
+    return json({ error: "记录数量必须是 1–500 之间的整数" }, 400);
+  }
+  const limit = requestedLimit;
   const policy = getListPolicy(url.searchParams.get("storagePolicy"));
   const listed = await listRecordObjects(env, policy);
   const sorted = listed.objects
     .sort((a, b) => getObjectTime(b).getTime() - getObjectTime(a).getTime())
     .slice(0, limit);
+
+  if (url.searchParams.get("linksOnly") === "1") {
+    return json({ files: sorted.map((object) => ({ url: `${url.origin}/file/${encodeURIComponent(object.key)}`, uploadedAt: getObjectTime(object).toISOString() })), storagePolicy: policy });
+  }
 
   const files = await Promise.all(sorted.map(async (object) => {
     const head = await env.IMAGES.head(object.key);

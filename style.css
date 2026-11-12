@@ -666,3 +666,22 @@ input.sr-only {
     grid-column: 1 / -1;
   }
 }
+.copy-recent-form {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 18px 0 0;
+}
+.copy-recent-form input {
+  width: 90px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+.copy-recent-hint, .copy-recent-status { color: var(--muted); font-size: 13px; }
+.copy-recent-status { min-height: 20px; margin: 10px 0; }
+#copy-recent-fallback { width: 100%; box-sizing: border-box; margin-bottom: 16px; }

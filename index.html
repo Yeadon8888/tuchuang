@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>图床 · Tuchuang</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23111827'/%3E%3Ctext x='16' y='20' text-anchor='middle' font-size='10' font-family='Arial' font-weight='700' fill='white'%3EIMG%3C/text%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="style.css?v=20260929-network-fallback" />
+  <link rel="stylesheet" href="style.css?v=20261112-batch-copy" />
 </head>
 <body>
 
@@ -134,11 +134,20 @@
             <button id="refresh-records-btn" class="btn-secondary">刷新记录</button>
           </div>
         </div>
+        <form id="copy-recent-form" class="copy-recent-form">
+          <label for="copy-recent-count">复制最近</label>
+          <input id="copy-recent-count" type="number" min="1" max="500" step="1" value="100" required inputmode="numeric" />
+          <span>条记录的 URL</span>
+          <button id="copy-recent-btn" class="btn-secondary" type="submit">批量复制</button>
+          <span class="copy-recent-hint">按当前筛选、从新到旧，每条一行；最多 500 条。</span>
+        </form>
+        <p id="copy-recent-status" class="copy-recent-status" role="status" aria-live="polite"></p>
+        <textarea id="copy-recent-fallback" class="hidden" readonly aria-label="批量链接，复制失败时可手动全选复制" rows="6"></textarea>
         <div id="records" class="results"></div>
       </section>
     </main>
   </div>
 
-  <script src="app.js?v=20260929-network-fallback"></script>
+  <script src="app.js?v=20261112-batch-copy"></script>
 </body>
 </html>
